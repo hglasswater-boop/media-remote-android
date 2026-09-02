@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -40,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,17 +58,26 @@ import dev.mediaremote.media.MediaSnapshot
 import dev.mediaremote.network.DiscoveredHost
 import dev.mediaremote.network.LocalAddress
 import dev.mediaremote.network.NsdHostDiscovery
+import dev.mediaremote.network.PairingLinks
 import dev.mediaremote.network.PairingStore
 import dev.mediaremote.network.RemoteClient
 import dev.mediaremote.network.RemoteServerService
+import dev.mediaremote.network.RemoteTarget
+import dev.mediaremote.network.RemoteTargetStore
+import dev.mediaremote.ui.QrCode
 import dev.mediaremote.update.StartupUpdateCheck
 
 class MainActivity : ComponentActivity() {
     private val runtimePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
+    private val sharedTextState = mutableStateOf<String?>(null)
+    private val pairingLinkState = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIncomingIntent(intent)
+
         val permissions = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
             if (Build.VERSION.SDK_INT >= 37) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
@@ -77,8 +88,33 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                MediaRemoteApp()
+                MediaRemoteApp(
+                    sharedText = sharedTextState.value,
+                    pairingLink = pairingLinkState.value,
+                    onSharedTextConsumed = { sharedTextState.value = null },
+                    onPairingLinkConsumed = { pairingLinkState.value = null },
+                )
                 StartupUpdateCheck()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        when (intent?.action) {
+            Intent.ACTION_SEND -> {
+                if (intent.type == "text/plain") {
+                    sharedTextState.value = intent.getStringExtra(Intent.EXTRA_TEXT)
+                }
+            }
+            Intent.ACTION_VIEW -> {
+                val data = intent.data?.toString()
+                if (PairingLinks.parse(data) != null) pairingLinkState.value = data
             }
         }
     }
@@ -89,10 +125,25 @@ private enum class Role {
     Remote,
 }
 
+private const val DOWNLOAD_URL =
+    "https://github.com/hglasswater-boop/media-remote-android/releases/download/debug-latest/MediaRemote-latest.apk"
+private const val YOUTUBE_MUSIC_PLAYLISTS_URL = "https://music.youtube.com/library/playlists"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MediaRemoteApp() {
+private fun MediaRemoteApp(
+    sharedText: String?,
+    pairingLink: String?,
+    onSharedTextConsumed: () -> Unit,
+    onPairingLinkConsumed: () -> Unit,
+) {
     var role by remember { mutableStateOf(Role.Host) }
+
+    LaunchedEffect(sharedText, pairingLink) {
+        if (!sharedText.isNullOrBlank() || !pairingLink.isNullOrBlank()) {
+            role = Role.Remote
+        }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("MediaRemote") }) },
@@ -120,7 +171,12 @@ private fun MediaRemoteApp() {
 
             when (role) {
                 Role.Host -> HostScreen()
-                Role.Remote -> RemoteScreen()
+                Role.Remote -> RemoteScreen(
+                    sharedText = sharedText,
+                    pairingLink = pairingLink,
+                    onSharedTextConsumed = onSharedTextConsumed,
+                    onPairingLinkConsumed = onPairingLinkConsumed,
+                )
             }
         }
     }
@@ -133,6 +189,9 @@ private fun HostScreen() {
     var snapshot by remember { mutableStateOf(MediaSessionBridge.snapshot(context)) }
     val token = remember { PairingStore.getOrCreateToken(context) }
     val address = remember { LocalAddress.bestIpv4Address() }
+    val pairingLink = remember(address, token) {
+        PairingLinks.create(address, RemoteServerService.PORT, token)
+    }
 
     Text(
         "この端末で YouTube Music を再生し、別端末から操作します。",
@@ -140,7 +199,40 @@ private fun HostScreen() {
     )
 
     InfoCard("接続先", "$address:${RemoteServerService.PORT}")
-    InfoCard("ペアリングキー", token)
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("操作端末をペアリング", fontWeight = FontWeight.Bold)
+            QrCode(pairingLink)
+            Text(
+                "操作端末で読み取ると、IP・Port・ペアリングキーを自動登録します。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("MediaRemoteが未インストールの場合", fontWeight = FontWeight.Bold)
+            QrCode(DOWNLOAD_URL)
+            Text(
+                "このQRから最新の署名済みAPKをダウンロードできます。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
 
     if (!listenerEnabled) {
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -200,12 +292,19 @@ private fun HostScreen() {
 }
 
 @Composable
-private fun RemoteScreen() {
+private fun RemoteScreen(
+    sharedText: String?,
+    pairingLink: String?,
+    onSharedTextConsumed: () -> Unit,
+    onPairingLinkConsumed: () -> Unit,
+) {
     val context = LocalContext.current
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableIntStateOf(RemoteServerService.PORT) }
-    var token by remember { mutableStateOf("") }
-    var resultMessage by remember { mutableStateOf("未接続") }
+    val savedTarget = remember { RemoteTargetStore.load(context) }
+    var host by remember { mutableStateOf(savedTarget?.host.orEmpty()) }
+    var port by remember { mutableIntStateOf(savedTarget?.port ?: RemoteServerService.PORT) }
+    var token by remember { mutableStateOf(savedTarget?.token.orEmpty()) }
+    var selectionText by remember { mutableStateOf("") }
+    var resultMessage by remember { mutableStateOf(if (savedTarget == null) "未接続" else "ペアリング済み") }
     var snapshot by remember { mutableStateOf(MediaSnapshot(false)) }
     var discoveredHosts by remember { mutableStateOf(emptyList<DiscoveredHost>()) }
     val discovery = remember(context) { NsdHostDiscovery(context) }
@@ -215,17 +314,54 @@ private fun RemoteScreen() {
         onDispose { discovery.stop() }
     }
 
-    fun send(command: String, value: Long = 0L) {
+    fun saveTargetIfValid() {
+        if (host.isNotBlank() && token.isNotBlank() && port in 1..65535) {
+            RemoteTargetStore.save(context, RemoteTarget(host, port, token))
+        }
+    }
+
+    fun send(command: String, value: Long = 0L, text: String = "") {
+        if (host.isBlank() || token.isBlank()) {
+            resultMessage = "先に再生端末をペアリングしてください"
+            return
+        }
+        saveTargetIfValid()
         resultMessage = "送信中…"
         RemoteClient.send(
             host = host,
             token = token,
             command = command,
             value = value,
+            text = text,
             port = port,
         ) { response ->
             resultMessage = response.message
             response.snapshot?.let { snapshot = it }
+        }
+    }
+
+    LaunchedEffect(pairingLink) {
+        val pair = PairingLinks.parse(pairingLink)
+        if (pair != null) {
+            host = pair.host
+            port = pair.port
+            token = pair.token
+            RemoteTargetStore.save(context, RemoteTarget(host, port, token))
+            resultMessage = "再生端末をペアリングしました"
+            onPairingLinkConsumed()
+            send("status")
+        }
+    }
+
+    LaunchedEffect(sharedText) {
+        val incoming = sharedText?.trim().orEmpty()
+        if (incoming.isBlank()) return@LaunchedEffect
+        val youtubeUrl = extractYouTubeUrl(incoming)
+        selectionText = youtubeUrl ?: incoming
+        onSharedTextConsumed()
+        if (youtubeUrl != null && host.isNotBlank() && token.isNotBlank()) {
+            resultMessage = "共有されたプレイリストを再生端末へ転送中…"
+            send("playUrl", text = youtubeUrl)
         }
     }
 
@@ -283,6 +419,56 @@ private fun RemoteScreen() {
         Text("接続 / 状態取得")
     }
 
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("選曲 / プレイリスト", fontWeight = FontWeight.Bold)
+            Text(
+                "同じGoogleアカウントのYouTube Musicでプレイリストを選び、共有先にMediaRemoteを指定すると、そのまま再生端末へ転送します。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(YOUTUBE_MUSIC_PLAYLISTS_URL)).apply {
+                        setPackage(MediaSessionBridge.TARGET_PACKAGE)
+                    }
+                    runCatching { context.startActivity(intent) }
+                        .onFailure { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(YOUTUBE_MUSIC_PLAYLISTS_URL))) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("YouTube Musicのプレイリストを開く")
+            }
+            OutlinedTextField(
+                value = selectionText,
+                onValueChange = { selectionText = it },
+                label = { Text("曲名 または YouTube Music URL") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = { send("playSearch", text = selectionText) },
+                    enabled = selectionText.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("曲名で再生")
+                }
+                Button(
+                    onClick = { send("playUrl", text = selectionText) },
+                    enabled = extractYouTubeUrl(selectionText) != null,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("URLを再生")
+                }
+            }
+        }
+    }
+
     Text(resultMessage)
 
     Row(
@@ -321,6 +507,11 @@ private fun RemoteScreen() {
     Spacer(Modifier.height(4.dp))
     NowPlaying(snapshot)
 }
+
+private fun extractYouTubeUrl(text: String): String? =
+    Regex("https?://(?:(?:music\\.)?youtube\\.com|youtu\\.be)/[^\\s]+", RegexOption.IGNORE_CASE)
+        .find(text)
+        ?.value
 
 @Composable
 private fun DiscoveredHostButton(
