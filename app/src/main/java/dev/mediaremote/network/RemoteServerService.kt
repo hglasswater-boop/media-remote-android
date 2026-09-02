@@ -49,12 +49,14 @@ class RemoteServerService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        MediaSessionBridge.prepare(this)
         startServer()
         registerNsdService()
     }
 
     override fun onDestroy() {
         unregisterNsdService()
+        MediaSessionBridge.releaseBrowser()
         running.set(false)
         runCatching { serverSocket?.close() }
         acceptThread?.interrupt()
@@ -113,7 +115,7 @@ class RemoteServerService : Service() {
                 if (!MediaSessionBridge.execute(this, command)) {
                     return@runCatching RemoteResponse(
                         false,
-                        "YouTube Music MediaSession not available",
+                        "YouTube Music cannot handle this command yet",
                         MediaSessionBridge.snapshot(this),
                     )
                 }
