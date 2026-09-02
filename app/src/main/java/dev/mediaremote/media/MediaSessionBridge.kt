@@ -1,11 +1,15 @@
 package dev.mediaremote.media
 
+import android.app.SearchManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.media.MediaMetadata
+import android.media.MediaStore
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.net.Uri
 
 data class MediaSnapshot(
     val available: Boolean,
@@ -54,19 +58,95 @@ object MediaSessionBridge {
         val controller = controller(context) ?: return false
         val controls = controller.transportControls
 
-        when (command) {
-            RemoteMediaCommand.Play -> controls.play()
-            RemoteMediaCommand.Pause -> controls.pause()
-            RemoteMediaCommand.Next -> controls.skipToNext()
-            RemoteMediaCommand.Previous -> controls.skipToPrevious()
+        return when (command) {
+            RemoteMediaCommand.Play -> controls.play().let { true }
+            RemoteMediaCommand.Pause -> controls.pause().let { true }
+            RemoteMediaCommand.Next -> controls.skipToNext().let { true }
+            RemoteMediaCommand.Previous -> controls.skipToPrevious().let { true }
             is RemoteMediaCommand.SeekBy -> {
                 val current = controller.playbackState?.position ?: 0L
                 val duration = controller.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: Long.MAX_VALUE
                 val target = (current + command.deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
                 controls.seekTo(target)
+                true
             }
+            is RemoteMediaCommand.PlayFromSearch -> playFromSearch(context, controller, command.query)
+            is RemoteMediaCommand.PlayFromUrl -> playFromUrl(context, controller, command.url)
         }
-        return true
+    }
+
+    private fun playFromSearch(
+        context: Context,
+        controller: MediaController,
+        query: String,
+    ): Boolean {
+        val clean = query.trim()
+        if (clean.isBlank()) return false
+
+        val actions = controller.playbackState?.actions ?: 0L
+        if (actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L) {
+            controller.transportControls.playFromSearch(clean, null)
+            return true
+        }
+
+        return runCatching {
+            context.startActivity(
+                Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                    setPackage(TARGET_PACKAGE)
+                    putExtra(SearchManager.QUERY, clean)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun playFromUrl(
+        context: Context,
+        controller: MediaController,
+        rawUrl: String,
+    ): Boolean {
+        val uri = normalizeYouTubeMusicUri(rawUrl) ?: return false
+        val actions = controller.playbackState?.actions ?: 0L
+
+        if (actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
+            controller.transportControls.playFromUri(uri, null)
+            return true
+        }
+
+        return runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply {
+                    setPackage(TARGET_PACKAGE)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun normalizeYouTubeMusicUri(raw: String): Uri? {
+        val candidate = Regex("https?://(?:music\\.)?youtube\\.com/[^\\s]+", RegexOption.IGNORE_CASE)
+            .find(raw)
+            ?.value
+            ?: raw.trim().takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            ?: return null
+
+        val source = runCatching { Uri.parse(candidate) }.getOrNull() ?: return null
+        val playlistId = source.getQueryParameter("list")
+        if (!playlistId.isNullOrBlank()) {
+            return Uri.Builder()
+                .scheme("https")
+                .authority("music.youtube.com")
+                .path("/watch")
+                .appendQueryParameter("list", playlistId)
+                .build()
+        }
+
+        return source.buildUpon()
+            .scheme("https")
+            .authority("music.youtube.com")
+            .build()
     }
 }
 
@@ -76,4 +156,6 @@ sealed interface RemoteMediaCommand {
     data object Next : RemoteMediaCommand
     data object Previous : RemoteMediaCommand
     data class SeekBy(val deltaMs: Long) : RemoteMediaCommand
+    data class PlayFromSearch(val query: String) : RemoteMediaCommand
+    data class PlayFromUrl(val url: String) : RemoteMediaCommand
 }
