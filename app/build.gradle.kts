@@ -16,8 +16,8 @@ android {
         applicationId = "dev.mediaremote"
         minSdk = 28
         targetSdk = 37
-        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 2
-        versionName = "0.3.0"
+        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 3
+        versionName = "0.4.0"
     }
 
     signingConfigs {
@@ -64,4 +64,5 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.google.zxing:core:3.5.4")
 }
