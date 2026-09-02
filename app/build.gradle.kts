@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseKeystore = providers.environmentVariable("MEDIAREMOTE_KEYSTORE").orNull
+val releaseKeystorePassword = providers.environmentVariable("MEDIAREMOTE_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("MEDIAREMOTE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("MEDIAREMOTE_KEY_PASSWORD").orNull
+
 android {
     namespace = "dev.mediaremote"
     compileSdk = 37
@@ -12,7 +17,26 @@ android {
         minSdk = 28
         targetSdk = 37
         versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 2
-        versionName = "0.2.0"
+        versionName = "0.3.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (!releaseKeystore.isNullOrBlank()) {
+                storeFile = file(releaseKeystore)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isDebuggable = false
+        }
     }
 
     buildFeatures {
