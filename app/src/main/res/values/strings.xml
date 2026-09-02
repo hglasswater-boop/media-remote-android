@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MediaRemote</string>
-    <string name="server_channel_name">MediaRemote server</string>
-    <string name="server_notification_title">MediaRemote is listening</string>
+    <string name="app_name">YT Music Remote</string>
+    <string name="server_channel_name">YouTube Music remote</string>
+    <string name="server_notification_title">YouTube Music remote is active</string>
 </resources>
