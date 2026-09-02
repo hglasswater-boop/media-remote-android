@@ -63,4 +63,4 @@ YouTube Music
 - Compose BOM: 2026.08.00
 - JDK: 17
 
-GitHub Actionsは初回実行時にGradle Wrapperを生成し、その後debug APKをビルドします。
+Gradle Wrapperはリポジトリに含めています。GitHub ActionsはAndroid 17 SDKを導入し、Wrapper経由でdebug APKをビルドしてartifactとして保存します。
