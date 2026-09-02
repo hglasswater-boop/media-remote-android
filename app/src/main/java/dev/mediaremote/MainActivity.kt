@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -31,12 +33,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,10 +53,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.mediaremote.media.MediaSessionBridge
 import dev.mediaremote.media.MediaSnapshot
+import dev.mediaremote.network.DiscoveredHost
 import dev.mediaremote.network.LocalAddress
+import dev.mediaremote.network.NsdHostDiscovery
 import dev.mediaremote.network.PairingStore
 import dev.mediaremote.network.RemoteClient
 import dev.mediaremote.network.RemoteServerService
+import dev.mediaremote.update.StartupUpdateCheck
 
 class MainActivity : ComponentActivity() {
     private val runtimePermissionLauncher =
@@ -70,6 +78,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 MediaRemoteApp()
+                StartupUpdateCheck()
             }
         }
     }
@@ -92,6 +101,7 @@ private fun MediaRemoteApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -173,6 +183,12 @@ private fun HostScreen() {
         Text("LANリモートを開始")
     }
 
+    Text(
+        "開始すると、この端末は同じLAN上のMediaRemoteから自動検出されます。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
     Button(
         onClick = { snapshot = MediaSessionBridge.snapshot(context) },
         modifier = Modifier.fillMaxWidth(),
@@ -185,25 +201,70 @@ private fun HostScreen() {
 
 @Composable
 private fun RemoteScreen() {
+    val context = LocalContext.current
     var host by remember { mutableStateOf("") }
+    var port by remember { mutableIntStateOf(RemoteServerService.PORT) }
     var token by remember { mutableStateOf("") }
     var resultMessage by remember { mutableStateOf("未接続") }
     var snapshot by remember { mutableStateOf(MediaSnapshot(false)) }
+    var discoveredHosts by remember { mutableStateOf(emptyList<DiscoveredHost>()) }
+    val discovery = remember(context) { NsdHostDiscovery(context) }
+
+    DisposableEffect(discovery) {
+        discovery.start { hosts -> discoveredHosts = hosts }
+        onDispose { discovery.stop() }
+    }
 
     fun send(command: String, value: Long = 0L) {
         resultMessage = "送信中…"
-        RemoteClient.send(host, token, command, value) { response ->
+        RemoteClient.send(
+            host = host,
+            token = token,
+            command = command,
+            value = value,
+            port = port,
+        ) { response ->
             resultMessage = response.message
             response.snapshot?.let { snapshot = it }
         }
     }
 
+    Text("再生端末を自動検出", fontWeight = FontWeight.Bold)
+    if (discoveredHosts.isEmpty()) {
+        Text(
+            "同じLAN上のMediaRemoteを探索中…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else {
+        discoveredHosts.forEach { discovered ->
+            DiscoveredHostButton(
+                discovered = discovered,
+                selected = host == discovered.address && port == discovered.port,
+                onClick = {
+                    host = discovered.address
+                    port = discovered.port
+                    resultMessage = "${discovered.serviceName} を選択"
+                },
+            )
+        }
+    }
+
     OutlinedTextField(
         value = host,
-        onValueChange = { host = it },
-        label = { Text("再生端末のIP") },
+        onValueChange = {
+            host = it
+            port = RemoteServerService.PORT
+        },
+        label = { Text("再生端末のIP（手動指定も可）") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
+    )
+
+    Text(
+        "Port $port",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
     OutlinedTextField(
@@ -259,6 +320,32 @@ private fun RemoteScreen() {
 
     Spacer(Modifier.height(4.dp))
     NowPlaying(snapshot)
+}
+
+@Composable
+private fun DiscoveredHostButton(
+    discovered: DiscoveredHost,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Text(
+                if (selected) "✓ ${discovered.serviceName}" else discovered.serviceName,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "${discovered.address}:${discovered.port}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
 }
 
 @Composable
