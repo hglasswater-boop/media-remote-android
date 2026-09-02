@@ -10,7 +10,6 @@ import java.net.Socket
 import java.util.concurrent.Executors
 
 object RemoteClient {
-    private const val PORT = 50505
     private val executor = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -19,12 +18,13 @@ object RemoteClient {
         token: String,
         command: String,
         value: Long = 0L,
+        port: Int = RemoteServerService.PORT,
         callback: (RemoteResponse) -> Unit,
     ) {
         executor.execute {
             val response = runCatching {
                 Socket().use { socket ->
-                    socket.connect(InetSocketAddress(host.trim(), PORT), 3_000)
+                    socket.connect(InetSocketAddress(host.trim(), port), 3_000)
                     socket.soTimeout = 3_000
 
                     val writer = PrintWriter(socket.getOutputStream(), true)

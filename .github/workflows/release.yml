@@ -1,0 +1,69 @@
+name: Rolling Debug Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mediaremote-debug-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android 17 SDK
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -eu
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "asset=MediaRemote-${VERSION}-b${GITHUB_RUN_NUMBER}-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug -PbuildNumber=${{ steps.meta.outputs.build }} --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "${{ steps.meta.outputs.asset }}"
+
+      - name: Replace rolling debug release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -eu
+          gh release delete debug-latest --cleanup-tag -y || true
+          gh release create debug-latest \
+            "${{ steps.meta.outputs.asset }}" \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "MediaRemote ${{ steps.meta.outputs.version }} debug (build ${{ steps.meta.outputs.build }})" \
+            --notes "Rolling debug build from main. Commit: ${GITHUB_SHA}"
