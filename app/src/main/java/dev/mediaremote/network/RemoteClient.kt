@@ -18,6 +18,7 @@ object RemoteClient {
         token: String,
         command: String,
         value: Long = 0L,
+        text: String = "",
         port: Int = RemoteServerService.PORT,
         callback: (RemoteResponse) -> Unit,
     ) {
@@ -30,7 +31,7 @@ object RemoteClient {
                     val writer = PrintWriter(socket.getOutputStream(), true)
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
-                    writer.println(RemoteRequest(token, command, value).toJson())
+                    writer.println(RemoteRequest(token, command, value, text).toJson())
                     val line = reader.readLine() ?: error("No response from host")
                     RemoteResponse.fromJson(line)
                 }
