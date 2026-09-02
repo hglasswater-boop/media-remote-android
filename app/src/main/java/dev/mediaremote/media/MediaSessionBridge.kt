@@ -8,7 +8,6 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
-import android.net.Uri
 import android.provider.MediaStore
 
 data class MediaSnapshot(
@@ -22,6 +21,12 @@ data class MediaSnapshot(
     val packageName: String = "",
 )
 
+/**
+ * Bridge for the official YouTube Music Android app only.
+ *
+ * MediaRemote deliberately does not try to be a generic media controller. Keeping the target package
+ * explicit makes command routing and fallback behavior predictable.
+ */
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
 
@@ -72,9 +77,9 @@ object MediaSessionBridge {
                         val current = activeController.playbackState?.position ?: 0L
                         val duration = activeController.metadata
                             ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                            ?.takeIf { it > 0L }
                             ?: Long.MAX_VALUE
-                        val target = (current + command.deltaMs)
-                            .coerceIn(0L, duration.coerceAtLeast(0L))
+                        val target = (current + command.deltaMs).coerceIn(0L, duration)
                         controls.seekTo(target)
                         true
                     }
@@ -116,47 +121,23 @@ object MediaSessionBridge {
         controller: MediaController?,
         rawUrl: String,
     ): Boolean {
-        val uri = normalizeYouTubeMusicUri(rawUrl) ?: return false
+        val link = YouTubeMusicLink.extract(rawUrl) ?: return false
         val actions = controller?.playbackState?.actions ?: 0L
 
         if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
-            controller.transportControls.playFromUri(uri, null)
+            controller.transportControls.playFromUri(link.uri, null)
             return true
         }
 
         return runCatching {
             context.startActivity(
-                Intent(Intent.ACTION_VIEW, uri).apply {
+                Intent(Intent.ACTION_VIEW, link.uri).apply {
                     setPackage(TARGET_PACKAGE)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 },
             )
             true
         }.getOrDefault(false)
-    }
-
-    private fun normalizeYouTubeMusicUri(raw: String): Uri? {
-        val candidate = Regex("https?://(?:music\\.)?youtube\\.com/[^\\s]+", RegexOption.IGNORE_CASE)
-            .find(raw)
-            ?.value
-            ?: raw.trim().takeIf { it.startsWith("http://") || it.startsWith("https://") }
-            ?: return null
-
-        val source = runCatching { Uri.parse(candidate) }.getOrNull() ?: return null
-        val playlistId = source.getQueryParameter("list")
-        if (!playlistId.isNullOrBlank()) {
-            return Uri.Builder()
-                .scheme("https")
-                .authority("music.youtube.com")
-                .path("/watch")
-                .appendQueryParameter("list", playlistId)
-                .build()
-        }
-
-        return source.buildUpon()
-            .scheme("https")
-            .authority("music.youtube.com")
-            .build()
     }
 }
 
