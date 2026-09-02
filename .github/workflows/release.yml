@@ -123,5 +123,5 @@ jobs:
             MediaRemote-latest.apk \
             --target "${GITHUB_SHA}" \
             --prerelease \
-            --title "MediaRemote ${{ steps.meta.outputs.version }} signed (build ${{ steps.meta.outputs.build }})" \
-            --notes "Release-signed rolling build from main. Commit: ${GITHUB_SHA}"
+            --title "YT Music Remote ${{ steps.meta.outputs.version }} signed (build ${{ steps.meta.outputs.build }})" \
+            --notes "Signed rolling build for YouTube Music remote control. Commit: ${GITHUB_SHA}"
