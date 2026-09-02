@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadata
+import android.media.browse.MediaBrowser
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
@@ -25,16 +26,63 @@ data class MediaSnapshot(
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
 
+    @Volatile
+    private var browserController: MediaController? = null
+    private var serviceBrowser: MediaBrowser? = null
+
+    /** Connect to YouTube Music's MediaBrowserService so playFromMediaId can work
+     * even before a normal active MediaSession appears in getActiveSessions(). */
+    fun prepare(context: Context) {
+        if (serviceBrowser != null) return
+        val appContext = context.applicationContext
+        val callback = object : MediaBrowser.ConnectionCallback() {
+            override fun onConnected() {
+                val browser = serviceBrowser ?: return
+                browserController = runCatching {
+                    MediaController(appContext, browser.sessionToken)
+                }.getOrNull()
+            }
+
+            override fun onConnectionSuspended() {
+                browserController = null
+            }
+
+            override fun onConnectionFailed() {
+                browserController = null
+            }
+        }
+        val browser = MediaBrowser(
+            appContext,
+            ComponentName(TARGET_PACKAGE, YouTubeMusicBrowser.BROWSER_SERVICE),
+            callback,
+            null,
+        )
+        serviceBrowser = browser
+        runCatching { browser.connect() }
+            .onFailure {
+                serviceBrowser = null
+                browserController = null
+            }
+    }
+
+    fun releaseBrowser() {
+        val browser = serviceBrowser
+        serviceBrowser = null
+        browserController = null
+        if (browser != null) runCatching { browser.disconnect() }
+    }
+
     private fun controller(context: Context): MediaController? {
         val manager = context.getSystemService(MediaSessionManager::class.java)
         val listener = ComponentName(context, MediaNotificationListener::class.java)
 
-        return try {
+        val active = try {
             manager.getActiveSessions(listener)
                 .firstOrNull { it.packageName == TARGET_PACKAGE }
         } catch (_: SecurityException) {
             null
         }
+        return active ?: browserController
     }
 
     fun snapshot(context: Context): MediaSnapshot {
@@ -60,6 +108,7 @@ object MediaSessionBridge {
         return when (command) {
             is RemoteMediaCommand.PlayFromSearch -> playFromSearch(context, controller, command.query)
             is RemoteMediaCommand.PlayFromUrl -> playFromUrl(context, controller, command.url)
+            is RemoteMediaCommand.PlayFromMediaId -> playFromMediaId(controller, command.mediaId)
             else -> {
                 val activeController = controller ?: return false
                 val controls = activeController.transportControls
@@ -79,10 +128,20 @@ object MediaSessionBridge {
                         true
                     }
                     is RemoteMediaCommand.PlayFromSearch,
-                    is RemoteMediaCommand.PlayFromUrl -> error("Handled above")
+                    is RemoteMediaCommand.PlayFromUrl,
+                    is RemoteMediaCommand.PlayFromMediaId -> error("Handled above")
                 }
             }
         }
+    }
+
+    private fun playFromMediaId(controller: MediaController?, mediaId: String): Boolean {
+        val clean = mediaId.trim()
+        if (clean.isBlank() || controller == null) return false
+        val actions = controller.playbackState?.actions ?: 0L
+        if (actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID == 0L) return false
+        controller.transportControls.playFromMediaId(clean, null)
+        return true
     }
 
     private fun playFromSearch(
@@ -168,4 +227,5 @@ sealed interface RemoteMediaCommand {
     data class SeekBy(val deltaMs: Long) : RemoteMediaCommand
     data class PlayFromSearch(val query: String) : RemoteMediaCommand
     data class PlayFromUrl(val url: String) : RemoteMediaCommand
+    data class PlayFromMediaId(val mediaId: String) : RemoteMediaCommand
 }
