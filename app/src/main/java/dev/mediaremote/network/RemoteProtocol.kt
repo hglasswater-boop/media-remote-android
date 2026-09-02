@@ -89,5 +89,6 @@ fun RemoteRequest.toMediaCommand(): RemoteMediaCommand? = when (command) {
     "seekBy" -> RemoteMediaCommand.SeekBy(value)
     "playSearch" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromSearch)
     "playUrl" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromUrl)
+    "playMediaId" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromMediaId)
     else -> null
 }
