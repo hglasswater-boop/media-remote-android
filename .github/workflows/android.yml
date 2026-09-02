@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -34,28 +34,9 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.6.0"
-
-      - name: Generate Gradle wrapper if missing
-        run: |
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            gradle wrapper --gradle-version 9.6.0
-          fi
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
-
-      - name: Commit generated Gradle wrapper
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
-        run: |
-          if [ -n "$(git status --porcelain -- gradlew gradlew.bat gradle/wrapper)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add gradlew gradlew.bat gradle/wrapper
-            git commit -m "chore: add Gradle wrapper"
-            git push
-          fi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
