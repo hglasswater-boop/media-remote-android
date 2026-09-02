@@ -1,4 +1,4 @@
-name: Rolling Debug Release
+name: Rolling Signed Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: mediaremote-debug-release
+  group: mediaremote-signed-release
   cancel-in-progress: true
 
 jobs:
@@ -47,15 +47,64 @@ jobs:
           BUILD=$((1000 + GITHUB_RUN_NUMBER))
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          echo "asset=MediaRemote-${VERSION}-b${BUILD}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "release_asset=MediaRemote-${VERSION}-b${BUILD}-release.apk" >> "$GITHUB_OUTPUT"
+          echo "compat_asset=MediaRemote-${VERSION}-b${BUILD}-debug.apk" >> "$GITHUB_OUTPUT"
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug -PbuildNumber=${{ steps.meta.outputs.build }} --stacktrace
+      - name: Require signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -eu
+          test -n "$KEYSTORE_BASE64" || { echo "Missing KEYSTORE_BASE64"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "Missing KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "Missing KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "Missing KEY_PASSWORD"; exit 1; }
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "${{ steps.meta.outputs.asset }}"
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        shell: bash
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/mediaremote-release.jks"
 
-      - name: Replace rolling debug release
+      - name: Build signed release APK
+        env:
+          MEDIAREMOTE_KEYSTORE: ${{ runner.temp }}/mediaremote-release.jks
+          MEDIAREMOTE_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          MEDIAREMOTE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          MEDIAREMOTE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease -PbuildNumber=${{ steps.meta.outputs.build }} --stacktrace
+
+      - name: Verify APK signature
+        env:
+          EXPECTED_CERT_SHA256: c544b7c22874031a7e6756dd6c3c789368b8e93d503aa8691697e216d5279d92
+        shell: bash
+        run: |
+          set -eu
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          ACTUAL=$($APKSIGNER verify --print-certs "$APK" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            | tr -d ':' \
+            | tr '[:upper:]' '[:lower:]')
+          test "$ACTUAL" = "$EXPECTED_CERT_SHA256" || {
+            echo "Unexpected signing certificate: $ACTUAL"
+            exit 1
+          }
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -eu
+          APK=app/build/outputs/apk/release/app-release.apk
+          cp "$APK" "${{ steps.meta.outputs.release_asset }}"
+          cp "$APK" "${{ steps.meta.outputs.compat_asset }}"
+
+      - name: Replace rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -63,8 +112,9 @@ jobs:
           set -eu
           gh release delete debug-latest --cleanup-tag -y || true
           gh release create debug-latest \
-            "${{ steps.meta.outputs.asset }}" \
+            "${{ steps.meta.outputs.release_asset }}" \
+            "${{ steps.meta.outputs.compat_asset }}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
-            --title "MediaRemote ${{ steps.meta.outputs.version }} debug (build ${{ steps.meta.outputs.build }})" \
-            --notes "Rolling debug build from main. Commit: ${GITHUB_SHA}"
+            --title "MediaRemote ${{ steps.meta.outputs.version }} signed (build ${{ steps.meta.outputs.build }})" \
+            --notes "Release-signed rolling build from main. Commit: ${GITHUB_SHA}"
