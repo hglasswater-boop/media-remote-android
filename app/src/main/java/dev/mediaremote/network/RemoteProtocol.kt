@@ -8,11 +8,13 @@ data class RemoteRequest(
     val token: String,
     val command: String,
     val value: Long = 0L,
+    val text: String = "",
 ) {
     fun toJson(): String = JSONObject()
         .put("token", token)
         .put("command", command)
         .put("value", value)
+        .put("text", text)
         .toString()
 
     companion object {
@@ -22,6 +24,7 @@ data class RemoteRequest(
                 token = json.getString("token"),
                 command = json.getString("command"),
                 value = json.optLong("value", 0L),
+                text = json.optString("text"),
             )
         }
     }
@@ -84,5 +87,7 @@ fun RemoteRequest.toMediaCommand(): RemoteMediaCommand? = when (command) {
     "next" -> RemoteMediaCommand.Next
     "previous" -> RemoteMediaCommand.Previous
     "seekBy" -> RemoteMediaCommand.SeekBy(value)
+    "playSearch" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromSearch)
+    "playUrl" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromUrl)
     else -> null
 }

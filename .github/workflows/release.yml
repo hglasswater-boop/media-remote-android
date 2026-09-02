@@ -108,6 +108,7 @@ jobs:
           APK=app/build/outputs/apk/release/app-release.apk
           cp "$APK" "${{ steps.meta.outputs.release_asset }}"
           cp "$APK" "${{ steps.meta.outputs.compat_asset }}"
+          cp "$APK" MediaRemote-latest.apk
 
       - name: Replace rolling release
         env:
@@ -119,6 +120,7 @@ jobs:
           gh release create debug-latest \
             "${{ steps.meta.outputs.release_asset }}" \
             "${{ steps.meta.outputs.compat_asset }}" \
+            MediaRemote-latest.apk \
             --target "${GITHUB_SHA}" \
             --prerelease \
             --title "MediaRemote ${{ steps.meta.outputs.version }} signed (build ${{ steps.meta.outputs.build }})" \
