@@ -59,7 +59,7 @@ private object ReleaseUpdateChecker {
             readTimeout = 15_000
             requestMethod = "GET"
             setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", "MediaRemote/${BuildConfig.VERSION_NAME}")
+            setRequestProperty("User-Agent", "YT-Music-Remote/${BuildConfig.VERSION_NAME}")
         }
 
         try {
@@ -112,13 +112,13 @@ fun StartupUpdateCheck() {
     val available = release ?: return
     AlertDialog(
         onDismissRequest = { release = null },
-        title = { Text("新しいバージョンがあります") },
+        title = { Text("YT Music Remoteを更新できます") },
         text = {
             Column {
-                Text("MediaRemote ${available.versionName} (build ${available.buildNumber}) が利用できます。")
+                Text("${available.versionName} (build ${available.buildNumber}) が利用できます。")
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "GitHub Releases を開いて更新内容とAPKを確認できます。",
+                    "GitHub Releasesで更新内容と署名済みAPKを確認できます。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -133,7 +133,7 @@ fun StartupUpdateCheck() {
                     release = null
                 },
             ) {
-                Text("GitHubを開く")
+                Text("更新ページを開く")
             }
         },
         dismissButton = {
