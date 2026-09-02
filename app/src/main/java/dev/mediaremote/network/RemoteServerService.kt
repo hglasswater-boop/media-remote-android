@@ -5,9 +5,12 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import dev.mediaremote.BuildConfig
 import dev.mediaremote.R
 import dev.mediaremote.media.MediaSessionBridge
 import java.io.BufferedReader
@@ -24,6 +27,8 @@ class RemoteServerService : Service() {
     private val clientPool = Executors.newCachedThreadPool()
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
+    private var nsdManager: NsdManager? = null
+    private var registrationListener: NsdManager.RegistrationListener? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -45,9 +50,11 @@ class RemoteServerService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
         startServer()
+        registerNsdService()
     }
 
     override fun onDestroy() {
+        unregisterNsdService()
         running.set(false)
         runCatching { serverSocket?.close() }
         acceptThread?.interrupt()
@@ -125,6 +132,38 @@ class RemoteServerService : Service() {
         }
     }
 
+    private fun registerNsdService() {
+        val manager = getSystemService(NsdManager::class.java)
+        val listener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) = Unit
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+            override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit
+            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+        }
+        val info = NsdServiceInfo().apply {
+            serviceName = "$SERVICE_NAME_PREFIX-${Build.MODEL.take(24)}"
+            serviceType = SERVICE_TYPE
+            port = PORT
+            setAttribute("version", BuildConfig.VERSION_NAME)
+            setAttribute("build", BuildConfig.VERSION_CODE.toString())
+        }
+        nsdManager = manager
+        registrationListener = listener
+        runCatching {
+            manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+        }
+    }
+
+    private fun unregisterNsdService() {
+        val manager = nsdManager
+        val listener = registrationListener
+        if (manager != null && listener != null) {
+            runCatching { manager.unregisterService(listener) }
+        }
+        registrationListener = null
+        nsdManager = null
+    }
+
     private fun secureEquals(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 
@@ -141,6 +180,8 @@ class RemoteServerService : Service() {
 
     companion object {
         const val PORT = 50505
+        const val SERVICE_TYPE = "_mediaremote._tcp."
+        const val SERVICE_NAME_PREFIX = "MediaRemote"
         private const val CHANNEL_ID = "media_remote_server"
         private const val NOTIFICATION_ID = 50505
     }
