@@ -55,36 +55,46 @@ object MediaSessionBridge {
     }
 
     fun execute(context: Context, command: RemoteMediaCommand): Boolean {
-        val controller = controller(context) ?: return false
-        val controls = controller.transportControls
+        val controller = controller(context)
 
         return when (command) {
-            RemoteMediaCommand.Play -> controls.play().let { true }
-            RemoteMediaCommand.Pause -> controls.pause().let { true }
-            RemoteMediaCommand.Next -> controls.skipToNext().let { true }
-            RemoteMediaCommand.Previous -> controls.skipToPrevious().let { true }
-            is RemoteMediaCommand.SeekBy -> {
-                val current = controller.playbackState?.position ?: 0L
-                val duration = controller.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: Long.MAX_VALUE
-                val target = (current + command.deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
-                controls.seekTo(target)
-                true
-            }
             is RemoteMediaCommand.PlayFromSearch -> playFromSearch(context, controller, command.query)
             is RemoteMediaCommand.PlayFromUrl -> playFromUrl(context, controller, command.url)
+            else -> {
+                val activeController = controller ?: return false
+                val controls = activeController.transportControls
+                when (command) {
+                    RemoteMediaCommand.Play -> controls.play().let { true }
+                    RemoteMediaCommand.Pause -> controls.pause().let { true }
+                    RemoteMediaCommand.Next -> controls.skipToNext().let { true }
+                    RemoteMediaCommand.Previous -> controls.skipToPrevious().let { true }
+                    is RemoteMediaCommand.SeekBy -> {
+                        val current = activeController.playbackState?.position ?: 0L
+                        val duration = activeController.metadata
+                            ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                            ?: Long.MAX_VALUE
+                        val target = (current + command.deltaMs)
+                            .coerceIn(0L, duration.coerceAtLeast(0L))
+                        controls.seekTo(target)
+                        true
+                    }
+                    is RemoteMediaCommand.PlayFromSearch,
+                    is RemoteMediaCommand.PlayFromUrl -> error("Handled above")
+                }
+            }
         }
     }
 
     private fun playFromSearch(
         context: Context,
-        controller: MediaController,
+        controller: MediaController?,
         query: String,
     ): Boolean {
         val clean = query.trim()
         if (clean.isBlank()) return false
 
-        val actions = controller.playbackState?.actions ?: 0L
-        if (actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L) {
+        val actions = controller?.playbackState?.actions ?: 0L
+        if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L) {
             controller.transportControls.playFromSearch(clean, null)
             return true
         }
@@ -103,13 +113,13 @@ object MediaSessionBridge {
 
     private fun playFromUrl(
         context: Context,
-        controller: MediaController,
+        controller: MediaController?,
         rawUrl: String,
     ): Boolean {
         val uri = normalizeYouTubeMusicUri(rawUrl) ?: return false
-        val actions = controller.playbackState?.actions ?: 0L
+        val actions = controller?.playbackState?.actions ?: 0L
 
-        if (actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
+        if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
             controller.transportControls.playFromUri(uri, null)
             return true
         }
