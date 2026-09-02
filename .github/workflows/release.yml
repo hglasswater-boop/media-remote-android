@@ -44,9 +44,10 @@ jobs:
           set -eu
           VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
           test -n "$VERSION"
+          BUILD=$((1000 + GITHUB_RUN_NUMBER))
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "asset=MediaRemote-${VERSION}-b${GITHUB_RUN_NUMBER}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "asset=MediaRemote-${VERSION}-b${BUILD}-debug.apk" >> "$GITHUB_OUTPUT"
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug -PbuildNumber=${{ steps.meta.outputs.build }} --stacktrace
