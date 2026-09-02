@@ -5,11 +5,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadata
-import android.media.MediaStore
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.Uri
+import android.provider.MediaStore
 
 data class MediaSnapshot(
     val available: Boolean,
