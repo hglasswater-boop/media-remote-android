@@ -38,7 +38,7 @@ private object ReleaseUpdateChecker {
     private const val PREFS = "release_update_check"
     private const val LAST_CHECK = "last_check"
     private const val AUTO_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
-    private val assetPattern = Regex("^MediaRemote-(.+)-b(\\d+)-debug\\.apk$")
+    private val assetPattern = Regex("^MediaRemote-(.+)-b(\\d+)-(?:release|debug)\\.apk$")
 
     fun isDue(context: Context): Boolean {
         val last = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
