@@ -121,14 +121,30 @@ internal class DialHttpServer(
                     if (pairingCode.isBlank()) {
                         onStatus("DIAL起動要求にpairingCodeがありません")
                         writeResponse(output, 400, "Bad Request", "text/plain", "Missing pairingCode")
-                    } else if (theme.isNotBlank() && theme != "m") {
-                        // DIAL advertises an app named YouTube; theme=m selects the YouTube Music
-                        // Lounge client. This receiver intentionally accepts YouTube Music only.
-                        writeResponse(output, 503, "Service Unavailable", "text/plain", "Unsupported theme")
-                    } else if (loungeSession.registerPairingCode(pairingCode)) {
-                        onStatus("DIAL起動成功 • Lounge接続待ち")
-                        // The Lounge receiver is already running before DIAL launch. peer-dial returns
-                        // 200 (not 201) in this state and Location points to the stable app instance.
+                    } else {
+                        if (theme.isNotBlank() && theme != "m") {
+                            // The reference receiver ultimately answers the DIAL launch even when its
+                            // app launch handler rejects a client-specific detail. Keep the same DIAL
+                            // behavior here and still try the Music Lounge session so the sender is not
+                            // terminated with a sender-visible HTTP 503 before Lounge can settle.
+                            Log.w(TAG, "Unexpected DIAL theme '$theme'; attempting Music Lounge pairing")
+                            onStatus("DIAL theme=$theme • Music接続として試行")
+                        }
+
+                        val paired = loungeSession.registerPairingCode(pairingCode)
+                        if (paired) {
+                            onStatus("DIAL起動成功 • Lounge接続待ち")
+                        } else {
+                            // peer-dial / yt-cast-receiver responds 200 when the delegate launch
+                            // callback completes without a pid, including its launch-error fallback.
+                            // Returning 503 here made stock YouTube Music immediately abort with
+                            // "このデバイスをテレビに接続できません / 503". Preserve the detailed
+                            // pairing diagnostic from YouTubeLoungeSession, but keep the DIAL launch
+                            // itself successful so the sender can continue the Lounge handshake.
+                            Log.w(TAG, "Pairing registration did not complete; continuing DIAL launch")
+                            onStatus("pairing登録未完了 • DIAL接続は継続")
+                        }
+
                         writeResponse(
                             output,
                             200,
@@ -140,9 +156,6 @@ internal class DialHttpServer(
                                 "Access-Control-Expose-Headers" to "Location",
                             ),
                         )
-                    } else {
-                        onStatus("DIAL起動失敗 • Loungeペアリング登録エラー")
-                        writeResponse(output, 503, "Service Unavailable", "text/plain", "Pairing failed")
                     }
                 }
 
