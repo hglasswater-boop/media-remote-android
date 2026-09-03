@@ -198,13 +198,18 @@ private object InAppUpdateInstaller {
     @Suppress("DEPRECATION")
     private fun verifyPackage(context: Context, apk: File, release: AvailableRelease) {
         val packageManager = context.packageManager
+        // Request both representations. Android 9+ should populate signingInfo, but some Android 10
+        // package archive parsers return it empty for an APK on disk while still exposing signatures.
+        // The legacy field is used only as a compatibility source for the same SHA-256 comparison.
+        val signingFlags =
+            PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
         val downloaded = packageManager.getPackageArchiveInfo(
             apk.absolutePath,
-            PackageManager.GET_SIGNING_CERTIFICATES,
+            signingFlags,
         ) ?: error("APKとして読み取れません")
         val installed = packageManager.getPackageInfo(
             context.packageName,
-            PackageManager.GET_SIGNING_CERTIFICATES,
+            signingFlags,
         )
 
         if (downloaded.packageName != context.packageName) {
@@ -217,14 +222,43 @@ private object InAppUpdateInstaller {
             error("現在より新しいAPKではありません")
         }
 
-        val installedDigests = installed.signingInfo?.apkContentsSigners
-            ?.map { signature -> sha256(signature.toByteArray()) }
-            ?.toSet()
+        val installedModernSigners = installed.signingInfo
+            ?.let { info ->
+                if (info.hasMultipleSigners()) {
+                    info.apkContentsSigners
+                } else {
+                    info.signingCertificateHistory ?: info.apkContentsSigners
+                }
+            }
             .orEmpty()
-        val downloadedDigests = downloaded.signingInfo?.apkContentsSigners
-            ?.map { signature -> sha256(signature.toByteArray()) }
-            ?.toSet()
+        val downloadedModernSigners = downloaded.signingInfo
+            ?.let { info ->
+                if (info.hasMultipleSigners()) {
+                    info.apkContentsSigners
+                } else {
+                    info.signingCertificateHistory ?: info.apkContentsSigners
+                }
+            }
             .orEmpty()
+
+        val installedDigests = installedModernSigners
+            .map { signature -> sha256(signature.toByteArray()) }
+            .toSet()
+            .ifEmpty {
+                installed.signatures
+                    ?.map { signature -> sha256(signature.toByteArray()) }
+                    ?.toSet()
+                    .orEmpty()
+            }
+        val downloadedDigests = downloadedModernSigners
+            .map { signature -> sha256(signature.toByteArray()) }
+            .toSet()
+            .ifEmpty {
+                downloaded.signatures
+                    ?.map { signature -> sha256(signature.toByteArray()) }
+                    ?.toSet()
+                    .orEmpty()
+            }
 
         if (installedDigests.isEmpty() || downloadedDigests.isEmpty()) {
             error("APK署名を確認できません")
