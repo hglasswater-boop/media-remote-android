@@ -14,7 +14,9 @@ object CastExperimentStore {
         prefs.getString(DEVICE_ID, null)?.takeIf { it.length == 32 }?.let { return it }
 
         val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
-        val generated = bytes.joinToString(separator = "") { "%02x".format(it) }
+        val generated = bytes.joinToString(separator = "") {
+            "%02x".format(it.toInt() and 0xff)
+        }
         prefs.edit().putString(DEVICE_ID, generated).apply()
         return generated
     }
