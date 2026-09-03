@@ -16,8 +16,8 @@ android {
         applicationId = "dev.mediaremote"
         minSdk = 28
         targetSdk = 37
-        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 17
-        versionName = "0.6.9"
+        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 18
+        versionName = "0.6.10"
     }
 
     signingConfigs {
@@ -66,7 +66,6 @@ dependencies {
     // Code Scanner can otherwise resolve an older transitive Fragment artifact.
     implementation("androidx.fragment:fragment-ktx:1.9.0")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
     implementation("com.google.zxing:core:3.5.4")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }
