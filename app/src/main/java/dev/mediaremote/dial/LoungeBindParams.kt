@@ -10,14 +10,15 @@ internal class LoungeBindParams(
     private val screenName: String,
     private val modelName: String,
 ) {
-    var loungeIdToken: String? = null
-    var sid: String? = null
-    var gsessionId: String? = null
-    var aid: Int = 3
+    @Volatile var loungeIdToken: String? = null
+    @Volatile var sid: String? = null
+    @Volatile var gsessionId: String? = null
+    @Volatile var aid: Int = 3
         private set
 
     private var rid: Int = Random.nextInt(41_000, 50_000)
 
+    @Synchronized
     fun updateFrom(message: LoungeMessage) {
         when (message.name) {
             "c" -> {
@@ -29,6 +30,7 @@ internal class LoungeBindParams(
         aid = maxOf(aid, message.aid)
     }
 
+    @Synchronized
     fun initSessionQuery(): String {
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         return encode(
@@ -40,6 +42,7 @@ internal class LoungeBindParams(
         )
     }
 
+    @Synchronized
     fun rpcQuery(): String {
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         val currentSid = requireNotNull(sid) { "Missing SID" }
@@ -56,6 +59,7 @@ internal class LoungeBindParams(
         )
     }
 
+    @Synchronized
     fun sendMessageQuery(responseAid: Int?): String {
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         val currentSid = requireNotNull(sid) { "Missing SID" }
