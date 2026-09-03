@@ -4,10 +4,13 @@ import android.app.SearchManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.media.MediaDescription
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.net.Uri
+import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
 
@@ -62,12 +65,34 @@ object MediaSessionBridge {
         val metadata = controller.metadata
         val playbackState = controller.playbackState
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+        val queue = controller.queue.orEmpty()
+        val activeQueueId = playbackState?.activeQueueItemId ?: -1L
+        var activeQueueIndex = queue.indexOfFirst { it.queueId == activeQueueId }
+
+        // Some YouTube Music builds leave activeQueueItemId unknown while still publishing a queue.
+        // In that case, use the metadata title / artist to identify the active queue entry.
+        if (activeQueueIndex < 0 && title.isNotBlank()) {
+            activeQueueIndex = queue.indexOfFirst { item ->
+                val description = item.description
+                val queueTitle = description.title?.toString().orEmpty()
+                val queueArtist = description.subtitle?.toString().orEmpty()
+                queueTitle == title && (artist.isBlank() || queueArtist.contains(artist, ignoreCase = true))
+            }
+        }
+        val activeDescription = queue.getOrNull(activeQueueIndex)?.description
+        val mediaId = resolveYouTubeVideoId(
+            metadata = metadata,
+            activeDescription = activeDescription,
+            controllerExtras = controller.extras,
+        )
 
         return MediaSnapshot(
             available = true,
-            mediaId = metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty(),
-            title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
-            artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+            mediaId = mediaId,
+            title = title,
+            artist = artist,
             album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
             playing = playbackState?.state == PlaybackState.STATE_PLAYING,
             playbackState = playbackState?.state ?: PlaybackState.STATE_NONE,
@@ -77,6 +102,92 @@ object MediaSessionBridge {
             durationMs = durationMs,
             packageName = controller.packageName,
         )
+    }
+
+    /**
+     * YouTube Music does not consistently expose the video id through METADATA_KEY_MEDIA_ID.
+     * Depending on app version / transition state it may live in the active queue item's
+     * MediaDescription, a media URI, or an extras field. Resolve all of those into the canonical
+     * 11-character YouTube video id so Lounge nowPlaying can identify local / autoplay track changes.
+     */
+    private fun resolveYouTubeVideoId(
+        metadata: MediaMetadata?,
+        activeDescription: MediaDescription?,
+        controllerExtras: Bundle?,
+    ): String {
+        val candidates = mutableListOf<String>()
+
+        fun add(value: String?) {
+            value?.trim()?.takeIf { it.isNotBlank() }?.let(candidates::add)
+        }
+
+        add(metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID))
+        add(metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI))
+        add(metadata?.description?.mediaId)
+        add(metadata?.description?.mediaUri?.toString())
+        add(activeDescription?.mediaId)
+        add(activeDescription?.mediaUri?.toString())
+
+        metadata?.keySet()?.forEach { key ->
+            if (looksLikeIdentityKey(key)) {
+                add(runCatching { metadata.getString(key) }.getOrNull())
+            }
+        }
+        addBundleIdentityValues(activeDescription?.extras, candidates)
+        addBundleIdentityValues(controllerExtras, candidates)
+
+        return candidates.firstNotNullOfOrNull(::extractYouTubeVideoId).orEmpty()
+    }
+
+    private fun addBundleIdentityValues(bundle: Bundle?, output: MutableList<String>) {
+        if (bundle == null) return
+        bundle.keySet().forEach { key ->
+            if (!looksLikeIdentityKey(key)) return@forEach
+            when (val value = runCatching { bundle.get(key) }.getOrNull()) {
+                is String -> value.trim().takeIf { it.isNotBlank() }?.let(output::add)
+                is Uri -> output.add(value.toString())
+            }
+        }
+    }
+
+    private fun looksLikeIdentityKey(key: String): Boolean {
+        val normalized = key.lowercase()
+        return "media_id" in normalized ||
+            "mediaid" in normalized ||
+            "video_id" in normalized ||
+            "videoid" in normalized ||
+            normalized.endsWith("uri") ||
+            normalized.endsWith("url")
+    }
+
+    private fun extractYouTubeVideoId(raw: String?): String? {
+        val value = raw?.trim().orEmpty()
+        if (value.isBlank()) return null
+        if (YOUTUBE_VIDEO_ID.matches(value)) return value
+
+        val uri = runCatching { Uri.parse(value) }.getOrNull()
+        val queryVideoId = runCatching { uri?.getQueryParameter("v") }.getOrNull()
+            ?.takeIf(YOUTUBE_VIDEO_ID::matches)
+        if (queryVideoId != null) return queryVideoId
+
+        if (uri?.host.equals("youtu.be", ignoreCase = true)) {
+            uri?.lastPathSegment
+                ?.takeIf(YOUTUBE_VIDEO_ID::matches)
+                ?.let { return it }
+        }
+
+        val tailCandidate = value
+            .substringAfterLast(':')
+            .substringAfterLast('/')
+            .substringBefore('?')
+            .substringBefore('&')
+            .trim()
+        if (YOUTUBE_VIDEO_ID.matches(tailCandidate)) return tailCandidate
+
+        return YOUTUBE_VIDEO_ID_HINT.find(value)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf(YOUTUBE_VIDEO_ID::matches)
     }
 
     /**
@@ -199,7 +310,7 @@ object MediaSessionBridge {
 
     private fun trySessionUriPlayback(
         controller: MediaController,
-        uri: android.net.Uri,
+        uri: Uri,
     ): Boolean {
         val controls = controller.transportControls
         val actions = controller.playbackState?.actions ?: 0L
@@ -258,6 +369,12 @@ object MediaSessionBridge {
         )
         true
     }.getOrDefault(false)
+
+    private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
+    private val YOUTUBE_VIDEO_ID_HINT = Regex(
+        "(?:[?&]v=|video(?:_|-)?id[=:/\\s]+)([A-Za-z0-9_-]{11})(?:[^A-Za-z0-9_-]|$)",
+        RegexOption.IGNORE_CASE,
+    )
 }
 
 sealed interface RemoteMediaCommand {
