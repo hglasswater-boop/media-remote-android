@@ -30,6 +30,16 @@ data class MediaSnapshot(
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
 
+    private data class SessionSignature(
+        val mediaId: String,
+        val title: String,
+        val artist: String,
+        val album: String,
+        val state: Int,
+        val queueIds: List<Long>,
+        val queueTitles: List<String>,
+    )
+
     private fun controller(context: Context): MediaController? {
         val manager = context.getSystemService(MediaSessionManager::class.java)
         val listener = ComponentName(context, MediaNotificationListener::class.java)
@@ -100,20 +110,18 @@ object MediaSessionBridge {
 
         val actions = controller?.playbackState?.actions ?: 0L
         if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L) {
+            val before = sessionSignature(controller)
             controller.transportControls.playFromSearch(clean, null)
-            return true
+            if (awaitSessionChange(controller, before)) return true
         }
 
-        return runCatching {
-            context.startActivity(
-                Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
-                    setPackage(TARGET_PACKAGE)
-                    putExtra(SearchManager.QUERY, clean)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                },
-            )
-            true
-        }.getOrDefault(false)
+        return launchYouTubeMusic(
+            context,
+            Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                setPackage(TARGET_PACKAGE)
+                putExtra(SearchManager.QUERY, clean)
+            },
+        )
     }
 
     private fun playFromUrl(
@@ -122,23 +130,85 @@ object MediaSessionBridge {
         rawUrl: String,
     ): Boolean {
         val link = YouTubeMusicLink.extract(rawUrl) ?: return false
-        val actions = controller?.playbackState?.actions ?: 0L
+        val playbackUri = link.playbackUri
 
-        if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
-            controller.transportControls.playFromUri(link.uri, null)
+        if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
             return true
         }
 
-        return runCatching {
-            context.startActivity(
-                Intent(Intent.ACTION_VIEW, link.uri).apply {
-                    setPackage(TARGET_PACKAGE)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                },
-            )
-            true
-        }.getOrDefault(false)
+        // YouTube Music has historically advertised some media-session capabilities without
+        // reliably acting on every URL. An explicit deep link is therefore the authoritative
+        // fallback instead of treating a transportControls call as success just because it did
+        // not throw.
+        return launchYouTubeMusic(
+            context,
+            Intent(Intent.ACTION_VIEW, playbackUri).apply {
+                setPackage(TARGET_PACKAGE)
+            },
+        )
     }
+
+    private fun trySessionUriPlayback(
+        controller: MediaController,
+        uri: android.net.Uri,
+    ): Boolean {
+        val controls = controller.transportControls
+        val actions = controller.playbackState?.actions ?: 0L
+        val before = sessionSignature(controller)
+
+        if (actions and PlaybackState.ACTION_PLAY_FROM_URI != 0L) {
+            runCatching { controls.playFromUri(uri, null) }
+            if (awaitSessionChange(controller, before)) return true
+        }
+
+        if (actions and PlaybackState.ACTION_PREPARE_FROM_URI != 0L) {
+            runCatching {
+                controls.prepareFromUri(uri, null)
+                Thread.sleep(180)
+                controls.play()
+            }
+            if (awaitSessionChange(controller, before)) return true
+        }
+
+        return false
+    }
+
+    private fun awaitSessionChange(
+        controller: MediaController,
+        before: SessionSignature,
+    ): Boolean {
+        repeat(6) {
+            Thread.sleep(140)
+            if (sessionSignature(controller) != before) return true
+        }
+        return false
+    }
+
+    private fun sessionSignature(controller: MediaController): SessionSignature {
+        val metadata = controller.metadata
+        val queue = controller.queue.orEmpty()
+        return SessionSignature(
+            mediaId = metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty(),
+            title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
+            artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+            album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
+            state = controller.playbackState?.state ?: PlaybackState.STATE_NONE,
+            queueIds = queue.map { it.queueId },
+            queueTitles = queue.map { it.description.title?.toString().orEmpty() },
+        )
+    }
+
+    private fun launchYouTubeMusic(
+        context: Context,
+        intent: Intent,
+    ): Boolean = runCatching {
+        context.startActivity(
+            intent.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            },
+        )
+        true
+    }.getOrDefault(false)
 }
 
 sealed interface RemoteMediaCommand {

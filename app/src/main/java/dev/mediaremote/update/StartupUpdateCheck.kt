@@ -15,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,6 +24,7 @@ import dev.mediaremote.BuildConfig
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -109,9 +111,88 @@ fun StartupUpdateCheck() {
             }
     }
 
-    val available = release ?: return
+    release?.let { available ->
+        UpdateAvailableDialog(
+            available = available,
+            onDismiss = { release = null },
+            onOpen = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(available.releaseUrl)))
+                release = null
+            },
+        )
+    }
+}
+
+@Composable
+fun ManualUpdateCheckButton(
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var release by remember { mutableStateOf<AvailableRelease?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    TextButton(
+        onClick = {
+            if (checking) return@TextButton
+            checking = true
+            message = null
+            scope.launch {
+                runCatching { ReleaseUpdateChecker.check() }
+                    .onSuccess { found ->
+                        ReleaseUpdateChecker.markChecked(context)
+                        if (found != null) {
+                            release = found
+                        } else {
+                            message = "最新版です\n${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})"
+                        }
+                    }
+                    .onFailure { error ->
+                        message = "更新を確認できませんでした\n${error.message ?: "通信エラー"}"
+                    }
+                checking = false
+            }
+        },
+        enabled = !checking,
+        modifier = modifier,
+    ) {
+        Text(if (checking) "確認中…" else "更新を確認")
+    }
+
+    release?.let { available ->
+        UpdateAvailableDialog(
+            available = available,
+            onDismiss = { release = null },
+            onOpen = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(available.releaseUrl)))
+                release = null
+            },
+        )
+    }
+
+    message?.let { text ->
+        AlertDialog(
+            onDismissRequest = { message = null },
+            title = { Text("アップデート") },
+            text = { Text(text) },
+            confirmButton = {
+                TextButton(onClick = { message = null }) {
+                    Text("OK")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    available: AvailableRelease,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+) {
     AlertDialog(
-        onDismissRequest = { release = null },
+        onDismissRequest = onDismiss,
         title = { Text("YT Music Remoteを更新できます") },
         text = {
             Column {
@@ -125,19 +206,12 @@ fun StartupUpdateCheck() {
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(available.releaseUrl)),
-                    )
-                    release = null
-                },
-            ) {
+            TextButton(onClick = onOpen) {
                 Text("更新ページを開く")
             }
         },
         dismissButton = {
-            TextButton(onClick = { release = null }) {
+            TextButton(onClick = onDismiss) {
                 Text("後で")
             }
         },

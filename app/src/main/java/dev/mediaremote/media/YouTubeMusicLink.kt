@@ -15,6 +15,28 @@ data class YouTubeMusicLink(
 ) {
     val url: String get() = uri.toString()
 
+    /**
+     * URI used when asking YouTube Music to start playback.
+     *
+     * A shared playlist URL points at /playlist, which is a library/details screen. For remote
+     * playback we intentionally use the watch endpoint with the same list id so YouTube Music can
+     * build the playlist watch queue instead of merely opening the playlist page.
+     */
+    val playbackUri: Uri
+        get() {
+            if (type != YouTubeMusicContentType.Playlist && type != YouTubeMusicContentType.AlbumOrMix) {
+                return uri
+            }
+            val playlistId = uri.getQueryParameter("list")?.takeIf { it.isNotBlank() } ?: return uri
+            if (uri.path == "/watch") return uri
+            return Uri.Builder()
+                .scheme("https")
+                .authority("music.youtube.com")
+                .path("/watch")
+                .appendQueryParameter("list", playlistId)
+                .build()
+        }
+
     companion object {
         private val urlPattern = Regex(
             "https?://(?:(?:music\\.)?youtube\\.com|(?:www\\.)?youtube\\.com|youtu\\.be)/[^\\s]+",
