@@ -195,14 +195,17 @@ private object InAppUpdateInstaller {
         context.startActivity(intent)
     }
 
+    @Suppress("DEPRECATION")
     private fun verifyPackage(context: Context, apk: File, release: AvailableRelease) {
         val packageManager = context.packageManager
-        val flags = PackageManager.PackageInfoFlags.of(
-            PackageManager.GET_SIGNING_CERTIFICATES.toLong(),
+        val downloaded = packageManager.getPackageArchiveInfo(
+            apk.absolutePath,
+            PackageManager.GET_SIGNING_CERTIFICATES,
+        ) ?: error("APKとして読み取れません")
+        val installed = packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_SIGNING_CERTIFICATES,
         )
-        val downloaded = packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
-            ?: error("APKとして読み取れません")
-        val installed = packageManager.getPackageInfo(context.packageName, flags)
 
         if (downloaded.packageName != context.packageName) {
             error("更新APKのpackage名が一致しません")
