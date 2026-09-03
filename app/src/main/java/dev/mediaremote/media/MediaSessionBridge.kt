@@ -82,11 +82,34 @@ object MediaSessionBridge {
             }
         }
         val activeDescription = queue.getOrNull(activeQueueIndex)?.description
-        val mediaId = resolveYouTubeVideoId(
+
+        // YouTube Music's public MediaSession surface is inconsistent between app versions. The id
+        // can live in metadata, a queue description, controller extras, PlaybackState extras or even
+        // a custom-action bundle. Scan the complete identity surface before falling back to the last
+        // signature-bound id that we previously proved.
+        val resolvedMediaId = resolveYouTubeVideoId(
             metadata = metadata,
             activeDescription = activeDescription,
             controllerExtras = controller.extras,
+            playbackState = playbackState,
         )
+        val mediaId = resolvedMediaId.ifBlank {
+            YouTubeMediaIdentityStore.resolve(
+                context = context,
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+            ).orEmpty()
+        }
+        if (YOUTUBE_VIDEO_ID.matches(mediaId)) {
+            YouTubeMediaIdentityStore.rememberResolved(
+                context = context,
+                videoId = mediaId,
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+            )
+        }
 
         return MediaSnapshot(
             available = true,
@@ -106,14 +129,15 @@ object MediaSessionBridge {
 
     /**
      * YouTube Music does not consistently expose the video id through METADATA_KEY_MEDIA_ID.
-     * Depending on app version / transition state it may live in the active queue item's
-     * MediaDescription, a media URI, or an extras field. Resolve all of those into the canonical
-     * 11-character YouTube video id so Lounge nowPlaying can identify local / autoplay track changes.
+     * Resolve every plausible MediaSession representation into the canonical 11-character YouTube
+     * video id. Opaque bundle keys are intentionally scanned too because YouTube Music has changed
+     * its internal key names between releases.
      */
     private fun resolveYouTubeVideoId(
         metadata: MediaMetadata?,
         activeDescription: MediaDescription?,
         controllerExtras: Bundle?,
+        playbackState: PlaybackState?,
     ): String {
         val candidates = mutableListOf<String>()
 
@@ -128,36 +152,43 @@ object MediaSessionBridge {
         add(activeDescription?.mediaId)
         add(activeDescription?.mediaUri?.toString())
 
+        // Do not filter metadata by key name. Newer YouTube Music versions can expose the id under
+        // obfuscated / generic keys while the value itself still contains a canonical id or URL.
         metadata?.keySet()?.forEach { key ->
-            if (looksLikeIdentityKey(key)) {
-                add(runCatching { metadata.getString(key) }.getOrNull())
-            }
+            add(runCatching { metadata.getString(key) }.getOrNull())
         }
-        addBundleIdentityValues(activeDescription?.extras, candidates)
-        addBundleIdentityValues(controllerExtras, candidates)
+
+        addBundleValues(activeDescription?.extras, candidates)
+        addBundleValues(controllerExtras, candidates)
+        addBundleValues(playbackState?.extras, candidates)
+        playbackState?.customActions.orEmpty().forEach { action ->
+            addBundleValues(action.extras, candidates)
+        }
 
         return candidates.firstNotNullOfOrNull(::extractYouTubeVideoId).orEmpty()
     }
 
-    private fun addBundleIdentityValues(bundle: Bundle?, output: MutableList<String>) {
-        if (bundle == null) return
+    private fun addBundleValues(
+        bundle: Bundle?,
+        output: MutableList<String>,
+        depth: Int = 0,
+    ) {
+        if (bundle == null || depth > MAX_BUNDLE_DEPTH) return
         bundle.keySet().forEach { key ->
-            if (!looksLikeIdentityKey(key)) return@forEach
-            when (val value = runCatching { bundle.get(key) }.getOrNull()) {
-                is String -> value.trim().takeIf { it.isNotBlank() }?.let(output::add)
-                is Uri -> output.add(value.toString())
-            }
+            addBundleValue(runCatching { bundle.get(key) }.getOrNull(), output, depth)
         }
     }
 
-    private fun looksLikeIdentityKey(key: String): Boolean {
-        val normalized = key.lowercase()
-        return "media_id" in normalized ||
-            "mediaid" in normalized ||
-            "video_id" in normalized ||
-            "videoid" in normalized ||
-            normalized.endsWith("uri") ||
-            normalized.endsWith("url")
+    private fun addBundleValue(value: Any?, output: MutableList<String>, depth: Int) {
+        when (value) {
+            null -> Unit
+            is String -> value.trim().takeIf { it.isNotBlank() }?.let(output::add)
+            is CharSequence -> value.toString().trim().takeIf { it.isNotBlank() }?.let(output::add)
+            is Uri -> output.add(value.toString())
+            is Bundle -> addBundleValues(value, output, depth + 1)
+            is Array<*> -> value.forEach { addBundleValue(it, output, depth + 1) }
+            is Iterable<*> -> value.forEach { addBundleValue(it, output, depth + 1) }
+        }
     }
 
     private fun extractYouTubeVideoId(raw: String?): String? {
@@ -291,8 +322,11 @@ object MediaSessionBridge {
     ): Boolean {
         val link = YouTubeMusicLink.extract(rawUrl) ?: return false
         val playbackUri = link.playbackUri
+        val requestedVideoId = playbackUri.getQueryParameter("v")
+            ?.takeIf(YOUTUBE_VIDEO_ID::matches)
 
         if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
+            YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
             return true
         }
 
@@ -300,12 +334,16 @@ object MediaSessionBridge {
         // reliably acting on every URL. An explicit deep link is therefore the authoritative
         // fallback instead of treating a transportControls call as success just because it did
         // not throw.
-        return launchYouTubeMusic(
+        val launched = launchYouTubeMusic(
             context,
             Intent(Intent.ACTION_VIEW, playbackUri).apply {
                 setPackage(TARGET_PACKAGE)
             },
         )
+        if (launched) {
+            YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
+        }
+        return launched
     }
 
     private fun trySessionUriPlayback(
@@ -370,6 +408,7 @@ object MediaSessionBridge {
         true
     }.getOrDefault(false)
 
+    private const val MAX_BUNDLE_DEPTH = 3
     private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
     private val YOUTUBE_VIDEO_ID_HINT = Regex(
         "(?:[?&]v=|video(?:_|-)?id[=:/\\s]+)([A-Za-z0-9_-]{11})(?:[^A-Za-z0-9_-]|$)",
