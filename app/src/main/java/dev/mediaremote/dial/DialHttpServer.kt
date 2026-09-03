@@ -114,7 +114,7 @@ internal class DialHttpServer(
                 }
 
                 request.method == "GET" && path.trimEnd('/') == "$APP_PATH/run" -> {
-                    writeResponse(output, 200, "OK", "text/plain", DialIdentityStore.pidForHttp(identityUuid))
+                    writeResponse(output, 200, "OK", "text/plain", identityUuid)
                 }
 
                 request.method == "DELETE" && path.trimEnd('/') == "$APP_PATH/run" -> {
@@ -270,5 +270,3 @@ internal class DialHttpServer(
         private const val MAX_LINE_BYTES = 16 * 1024
     }
 }
-
-private fun DialIdentityStore.pidForHttp(identityUuid: String): String = identityUuid
