@@ -37,6 +37,7 @@ class CastDiscoveryExperiment(context: Context) {
 
         val server = runCatching { ServerSocket(CAST_PORT) }.getOrElse {
             running.set(false)
+            toast("Cast実験を開始できません • TCP/$CAST_PORT 使用中")
             return false
         }
         probeSocket = server
@@ -67,13 +68,7 @@ class CastDiscoveryExperiment(context: Context) {
         while (running.get()) {
             val socket = runCatching { server.accept() }.getOrNull() ?: break
             CastExperimentStore.recordProbe(appContext)
-            mainHandler.post {
-                Toast.makeText(
-                    appContext,
-                    "Cast接続試行を検出 • TLS認証の手前まで到達",
-                    Toast.LENGTH_SHORT,
-                ).show()
-            }
+            toast("Cast接続試行を検出 • TLS認証の手前まで到達")
             probeClients.execute { holdProbe(socket) }
         }
     }
@@ -90,8 +85,14 @@ class CastDiscoveryExperiment(context: Context) {
     private fun registerCastService(): Boolean {
         val manager = appContext.getSystemService(NsdManager::class.java)
         val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) = Unit
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+                toast("Cast端末として公開しました • ${serviceInfo.serviceName}")
+            }
+
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                toast("Cast公開に失敗しました • NSD $errorCode")
+            }
+
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit
             override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
         }
@@ -112,14 +113,20 @@ class CastDiscoveryExperiment(context: Context) {
                 setAttribute("nf", "1")
                 setAttribute("rs", "")
             }
-        }.getOrElse { return false }
+        }.getOrElse {
+            toast("Cast広告情報を作れませんでした")
+            return false
+        }
 
         nsdManager = manager
         registrationListener = listener
         return runCatching {
             manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
             true
-        }.getOrDefault(false)
+        }.getOrElse {
+            toast("Cast公開を開始できませんでした")
+            false
+        }
     }
 
     private fun unregisterCastService() {
@@ -130,6 +137,12 @@ class CastDiscoveryExperiment(context: Context) {
         }
         registrationListener = null
         nsdManager = null
+    }
+
+    private fun toast(message: String) {
+        mainHandler.post {
+            Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+        }
     }
 
     companion object {
