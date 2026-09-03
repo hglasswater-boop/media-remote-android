@@ -2,20 +2,26 @@ package dev.mediaremote.dial
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.util.Log
 import dev.mediaremote.media.MediaSessionBridge
+import dev.mediaremote.media.MediaSnapshot
 import dev.mediaremote.media.RemoteMediaCommand
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
@@ -33,6 +39,7 @@ internal class YouTubeLoungeSession(
     private val bootstrapExecutor = Executors.newSingleThreadExecutor()
     private val rpcExecutor = Executors.newSingleThreadExecutor()
     private val sendExecutor = Executors.newSingleThreadExecutor()
+    private val mediaSyncExecutor = Executors.newSingleThreadScheduledExecutor()
     private val running = AtomicBoolean(false)
     private val bindParams = LoungeBindParams(
         deviceId = DialIdentityStore.loungeDeviceId(appContext),
@@ -43,11 +50,16 @@ internal class YouTubeLoungeSession(
     @Volatile private var screenId: String? = null
     @Volatile private var rpcConnection: HttpURLConnection? = null
     @Volatile private var rpcFuture: Future<*>? = null
+    @Volatile private var mediaSyncFuture: ScheduledFuture<*>? = null
     @Volatile private var sessionReady = false
     @Volatile private var rpcEstablished = false
+    @Volatile private var senderConnected = false
     private val outgoingOffset = AtomicInteger(0)
     @Volatile private var currentVideoId: String? = null
     @Volatile private var currentListId: String? = null
+    @Volatile private var currentIndex: Int? = null
+    @Volatile private var currentCpn: String = newCpn()
+    private var lastMediaSnapshot: MediaSnapshot? = null
 
     fun start(onReady: (() -> Unit)? = null) {
         if (!running.compareAndSet(false, true)) return
@@ -81,6 +93,9 @@ internal class YouTubeLoungeSession(
         running.set(false)
         sessionReady = false
         rpcEstablished = false
+        senderConnected = false
+        mediaSyncFuture?.cancel(true)
+        mediaSyncFuture = null
         rpcConnection?.disconnect()
         rpcConnection = null
         rpcFuture?.cancel(true)
@@ -88,6 +103,7 @@ internal class YouTubeLoungeSession(
         bootstrapExecutor.shutdownNow()
         rpcExecutor.shutdownNow()
         sendExecutor.shutdownNow()
+        mediaSyncExecutor.shutdownNow()
     }
 
     fun registerPairingCode(code: String): Boolean {
@@ -246,30 +262,41 @@ internal class YouTubeLoungeSession(
             "setPlaylist", "updatePlaylist" -> {
                 val videoId = payload?.optString("videoId")?.takeIf { it.isNotBlank() }
                 val listId = payload?.optString("listId")?.takeIf { it.isNotBlank() }
-                if (videoId != null) currentVideoId = videoId
+                val index = payload?.takeIf { it.has("currentIndex") }
+                    ?.optInt("currentIndex")
+                if (videoId != null) setCurrentVideo(videoId)
                 if (listId != null) currentListId = listId
+                if (index != null) currentIndex = index
 
                 if (message.name == "setPlaylist" && videoId != null) {
                     val url = buildMusicUrl(videoId, listId)
                     MediaSessionBridge.execute(appContext, RemoteMediaCommand.PlayFromUrl(url))
                     onStatus("YouTube Musicから選曲を受信")
-                    sendNowPlaying(message.aid)
+                    requestMediaSync(message.aid, force = true, delayMs = 180)
+                } else {
+                    requestMediaSync(message.aid, force = true, delayMs = 80)
                 }
             }
             "play" -> {
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Play)
-                sendNowPlaying(message.aid)
+                requestMediaSync(message.aid, force = true, delayMs = 120)
             }
             "pause" -> {
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Pause)
-                sendNowPlaying(message.aid)
+                requestMediaSync(message.aid, force = true, delayMs = 120)
             }
             "stopVideo" -> {
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Stop)
-                sendNowPlaying(message.aid)
+                requestMediaSync(message.aid, force = true, delayMs = 120)
             }
-            "next" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Next)
-            "previous" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Previous)
+            "next" -> {
+                MediaSessionBridge.execute(appContext, RemoteMediaCommand.Next)
+                requestMediaSync(message.aid, force = true, delayMs = 220)
+            }
+            "previous" -> {
+                MediaSessionBridge.execute(appContext, RemoteMediaCommand.Previous)
+                requestMediaSync(message.aid, force = true, delayMs = 220)
+            }
             "seekTo" -> {
                 val seconds = payload?.optString("newTime")?.toDoubleOrNull()
                     ?: payload?.optDouble("newTime", Double.NaN)?.takeUnless { it.isNaN() }
@@ -278,44 +305,167 @@ internal class YouTubeLoungeSession(
                         appContext,
                         RemoteMediaCommand.SeekTo((seconds * 1000.0).toLong()),
                     )
-                    sendNowPlaying(message.aid)
+                    requestMediaSync(message.aid, force = true, delayMs = 120)
                 }
             }
-            "getNowPlaying" -> sendNowPlaying(message.aid)
+            "getNowPlaying" -> {
+                val snapshot = MediaSessionBridge.snapshot(appContext)
+                sendNowPlaying(message.aid, snapshot)
+                sendStateChange(message.aid, snapshot)
+            }
             "getVolume" -> sendVolume(message.aid)
             "getPlaylist" -> sendPlaylist(message.aid)
             "getSubtitlesTrack" -> sendMessage(message.aid, "onSubtitlesTrackChanged", emptyMap())
-            "loungeStatus" -> onStatus("YouTube Music送信端末とLounge接続成立")
+            "loungeStatus" -> {
+                onStatus("YouTube Music送信端末とLounge接続成立")
+                senderConnected = true
+                startMediaSync()
+                publishMediaState(message.aid, force = true)
+                sendVolume(message.aid)
+            }
         }
     }
 
-    private fun sendNowPlaying(aid: Int) {
+    /**
+     * Keep the sender's play button, seek bar and elapsed time aligned with the real YouTube Music
+     * MediaSession. The reference receiver emits onStateChange whenever playback position changes;
+     * Android's MediaSession does not emit a callback for every clock tick, so sample it while a
+     * sender is connected and publish the same Lounge state event.
+     */
+    private fun startMediaSync() {
+        if (mediaSyncFuture != null) return
+        mediaSyncFuture = mediaSyncExecutor.scheduleAtFixedRate(
+            {
+                if (running.get() && senderConnected) {
+                    runCatching { publishMediaState(aid = null, force = false) }
+                        .onFailure { Log.w(TAG, "Periodic media state sync failed", it) }
+                }
+            },
+            0,
+            MEDIA_SYNC_INTERVAL_MS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun requestMediaSync(aid: Int?, force: Boolean, delayMs: Long) {
+        if (!running.get()) return
+        mediaSyncExecutor.schedule(
+            {
+                if (running.get()) {
+                    runCatching { publishMediaState(aid, force) }
+                        .onFailure { Log.w(TAG, "Requested media state sync failed", it) }
+                }
+            },
+            delayMs,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    @Synchronized
+    private fun publishMediaState(aid: Int?, force: Boolean) {
+        if (!sessionReady || !senderConnected) return
+
         val snapshot = MediaSessionBridge.snapshot(appContext)
+        val previous = lastMediaSnapshot
+
+        snapshot.mediaId
+            .takeIf(YOUTUBE_VIDEO_ID::matches)
+            ?.let(::setCurrentVideo)
+
+        val mediaChanged = previous == null ||
+            previous.mediaId != snapshot.mediaId ||
+            previous.title != snapshot.title ||
+            previous.artist != snapshot.artist ||
+            previous.album != snapshot.album ||
+            previous.durationMs != snapshot.durationMs
+        val stateChanged = previous == null ||
+            previous.playbackState != snapshot.playbackState
+        val actionsChanged = previous == null ||
+            previous.actions != snapshot.actions
+        val positionChanged = previous == null ||
+            abs(previous.positionMs - snapshot.positionMs) >= POSITION_CHANGE_THRESHOLD_MS
+
+        // The sender can extrapolate a playing clock from onStateChange, but periodic updates keep
+        // long sessions and seeks pinned to the playback phone's authoritative MediaSession clock.
+        if (force || stateChanged || positionChanged) {
+            sendStateChange(aid, snapshot)
+        }
+        if (force || mediaChanged || stateChanged) {
+            sendNowPlaying(aid, snapshot)
+        }
+        if (force || mediaChanged || actionsChanged) {
+            sendHasPreviousNextChanged(aid, snapshot)
+        }
+
+        lastMediaSnapshot = snapshot
+    }
+
+    private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
+        val state = loungePlayerState(snapshot)
+        val durationSeconds = snapshot.durationMs / 1000.0
         val payload = linkedMapOf<String, Any>(
             "currentTime" to (snapshot.positionMs / 1000.0),
-            "duration" to (snapshot.durationMs / 1000.0),
-            "loadedTime" to (snapshot.durationMs / 1000.0),
-            "state" to when {
-                !snapshot.available -> -1
-                snapshot.playing -> 1
-                else -> 2
-            },
+            "duration" to durationSeconds,
+            "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
+            "state" to state,
             "seekableStartTime" to 0,
-            "seekableEndTime" to (snapshot.durationMs / 1000.0),
+            "seekableEndTime" to durationSeconds,
+            "cpn" to currentCpn,
         )
         currentVideoId?.let { payload["videoId"] = it }
         currentListId?.let { payload["listId"] = it }
+        currentIndex?.let { payload["currentIndex"] = it }
         sendMessage(aid, "nowPlaying", payload)
+    }
+
+    private fun sendStateChange(aid: Int?, snapshot: MediaSnapshot) {
+        val state = loungePlayerState(snapshot)
+        val durationSeconds = snapshot.durationMs / 1000.0
+        sendMessage(
+            aid,
+            "onStateChange",
+            linkedMapOf(
+                "state" to state,
+                "currentTime" to (snapshot.positionMs / 1000.0),
+                "duration" to durationSeconds,
+                "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
+                "seekableStartTime" to 0,
+                "seekableEndTime" to durationSeconds,
+                "cpn" to currentCpn,
+            ),
+        )
+    }
+
+    private fun sendHasPreviousNextChanged(aid: Int?, snapshot: MediaSnapshot) {
+        sendMessage(
+            aid,
+            "onHasPreviousNextChanged",
+            mapOf(
+                "hasPrevious" to (snapshot.actions and PlaybackState.ACTION_SKIP_TO_PREVIOUS != 0L),
+                "hasNext" to (snapshot.actions and PlaybackState.ACTION_SKIP_TO_NEXT != 0L),
+            ),
+        )
+    }
+
+    private fun loungePlayerState(snapshot: MediaSnapshot): Int = when {
+        !snapshot.available -> -1
+        snapshot.playbackState == PlaybackState.STATE_PLAYING -> 1
+        snapshot.playbackState == PlaybackState.STATE_PAUSED -> 2
+        snapshot.playbackState == PlaybackState.STATE_BUFFERING ||
+            snapshot.playbackState == PlaybackState.STATE_CONNECTING -> 3
+        snapshot.playbackState == PlaybackState.STATE_STOPPED -> 4
+        else -> -1
     }
 
     private fun sendPlaylist(aid: Int) {
         val payload = linkedMapOf<String, Any>()
         currentListId?.let { payload["listId"] = it }
         currentVideoId?.let { payload["videoId"] = it }
+        currentIndex?.let { payload["currentIndex"] = it }
         sendMessage(aid, "playlistModified", payload)
     }
 
-    private fun sendVolume(aid: Int) {
+    private fun sendVolume(aid: Int?) {
         val audio = appContext.getSystemService(AudioManager::class.java)
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -351,6 +501,12 @@ internal class YouTubeLoungeSession(
         }
     }
 
+    private fun setCurrentVideo(videoId: String) {
+        if (videoId == currentVideoId) return
+        currentVideoId = videoId
+        currentCpn = newCpn()
+    }
+
     private fun buildMusicUrl(videoId: String, listId: String?): String = Uri.Builder()
         .scheme("https")
         .authority("music.youtube.com")
@@ -376,5 +532,13 @@ internal class YouTubeLoungeSession(
         private const val URL_GET_LOUNGE_TOKEN = "$BASE/api/lounge/pairing/get_lounge_token_batch"
         private const val URL_REGISTER_PAIRING_CODE = "$BASE/api/lounge/pairing/register_pairing_code"
         private const val URL_BIND = "$BASE/api/lounge/bc/bind"
+        private const val MEDIA_SYNC_INTERVAL_MS = 1_000L
+        private const val POSITION_CHANGE_THRESHOLD_MS = 400L
+        private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
+
+        private fun newCpn(): String = UUID.randomUUID()
+            .toString()
+            .replace("-", "")
+            .take(16)
     }
 }
