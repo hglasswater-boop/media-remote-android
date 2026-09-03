@@ -15,6 +15,7 @@ import java.net.HttpURLConnection
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
@@ -29,7 +30,9 @@ internal class YouTubeLoungeSession(
     private val onStatus: (String) -> Unit,
 ) {
     private val appContext = context.applicationContext
-    private val executor = Executors.newSingleThreadExecutor()
+    private val bootstrapExecutor = Executors.newSingleThreadExecutor()
+    private val rpcExecutor = Executors.newSingleThreadExecutor()
+    private val sendExecutor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private val bindParams = LoungeBindParams(
         deviceId = DialIdentityStore.loungeDeviceId(appContext),
@@ -41,13 +44,13 @@ internal class YouTubeLoungeSession(
     @Volatile private var rpcConnection: HttpURLConnection? = null
     @Volatile private var rpcFuture: Future<*>? = null
     @Volatile private var sessionReady = false
-    private var outgoingOffset = 0
-    private var currentVideoId: String? = null
-    private var currentListId: String? = null
+    private val outgoingOffset = AtomicInteger(0)
+    @Volatile private var currentVideoId: String? = null
+    @Volatile private var currentListId: String? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
-        executor.execute {
+        bootstrapExecutor.execute {
             while (running.get() && !sessionReady) {
                 runCatching { establish() }
                     .onFailure {
@@ -67,7 +70,9 @@ internal class YouTubeLoungeSession(
         rpcConnection = null
         rpcFuture?.cancel(true)
         rpcFuture = null
-        executor.shutdownNow()
+        bootstrapExecutor.shutdownNow()
+        rpcExecutor.shutdownNow()
+        sendExecutor.shutdownNow()
     }
 
     fun registerPairingCode(code: String): Boolean {
@@ -160,7 +165,7 @@ internal class YouTubeLoungeSession(
     }
 
     private fun startRpcLoop() {
-        rpcFuture = executor.submit {
+        rpcFuture = rpcExecutor.submit {
             while (running.get()) {
                 try {
                     val url = "$URL_BIND?${bindParams.rpcQuery()}"
@@ -202,11 +207,21 @@ internal class YouTubeLoungeSession(
                     val url = buildMusicUrl(videoId, listId)
                     MediaSessionBridge.execute(appContext, RemoteMediaCommand.PlayFromUrl(url))
                     onStatus("YouTube Musicから選曲を受信")
+                    sendNowPlaying(message.aid)
                 }
             }
-            "play" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Play)
-            "pause" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Pause)
-            "stopVideo" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Stop)
+            "play" -> {
+                MediaSessionBridge.execute(appContext, RemoteMediaCommand.Play)
+                sendNowPlaying(message.aid)
+            }
+            "pause" -> {
+                MediaSessionBridge.execute(appContext, RemoteMediaCommand.Pause)
+                sendNowPlaying(message.aid)
+            }
+            "stopVideo" -> {
+                MediaSessionBridge.execute(appContext, RemoteMediaCommand.Stop)
+                sendNowPlaying(message.aid)
+            }
             "next" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Next)
             "previous" -> MediaSessionBridge.execute(appContext, RemoteMediaCommand.Previous)
             "seekTo" -> {
@@ -217,6 +232,7 @@ internal class YouTubeLoungeSession(
                         appContext,
                         RemoteMediaCommand.SeekTo((seconds * 1000.0).toLong()),
                     )
+                    sendNowPlaying(message.aid)
                 }
             }
             "getNowPlaying" -> sendNowPlaying(message.aid)
@@ -269,11 +285,11 @@ internal class YouTubeLoungeSession(
 
     private fun sendMessage(aid: Int?, name: String, values: Map<String, Any>) {
         if (!sessionReady || !running.get()) return
-        executor.execute {
+        sendExecutor.execute {
             runCatching {
                 val form = linkedMapOf<String, String>(
                     "count" to "1",
-                    "ofs" to (outgoingOffset++).toString(),
+                    "ofs" to outgoingOffset.getAndIncrement().toString(),
                     "req0__sc" to name,
                 )
                 values.forEach { (key, value) ->
