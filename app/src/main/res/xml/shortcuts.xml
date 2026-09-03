@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="dev.mediaremote.MainActivity">
+        <data android:mimeType="text/plain" />
+        <category android:name="dev.mediaremote.category.YOUTUBE_MUSIC_SHARE" />
+    </share-target>
+</shortcuts>
