@@ -214,7 +214,7 @@ internal class DialHttpServer(
     /** DIAL Application-URL is a base collection URL and must not end in '/'. */
     private fun applicationUrl(): String = "${baseUrl()}$APPS_PATH"
 
-    private fun appInstanceUrl(): String = "$applicationUrl()/YouTube/$identityUuid"
+    private fun appInstanceUrl(): String = "${applicationUrl()}/YouTube/$identityUuid"
 
     private fun baseUrl(): String = "http://${hostAddress()}:$port"
 
