@@ -29,6 +29,7 @@ class RemoteServerService : Service() {
     private var acceptThread: Thread? = null
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
+    private var castExperiment: CastDiscoveryExperiment? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -36,7 +37,7 @@ class RemoteServerService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(getString(R.string.server_notification_title))
-            .setContentText("同じLANから接続できます • ${LocalAddress.bestIpv4Address()}:$PORT")
+            .setContentText("同じLANから接続できます • ${LocalAddress.bestIpv4Address()}:$PORT • Cast実験中")
             .setOngoing(true)
             .build()
 
@@ -51,9 +52,15 @@ class RemoteServerService : Service() {
         }
         startServer()
         registerNsdService()
+
+        CastDiscoveryExperiment(this).also { experiment ->
+            if (experiment.start()) castExperiment = experiment
+        }
     }
 
     override fun onDestroy() {
+        castExperiment?.stop()
+        castExperiment = null
         unregisterNsdService()
         running.set(false)
         runCatching { serverSocket?.close() }
