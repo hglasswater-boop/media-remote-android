@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dev.mediaremote.BuildConfig
 import dev.mediaremote.R
+import dev.mediaremote.dial.DialYouTubeReceiver
 import dev.mediaremote.media.MediaSessionBridge
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -29,7 +30,7 @@ class RemoteServerService : Service() {
     private var acceptThread: Thread? = null
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
-    private var castExperiment: CastDiscoveryExperiment? = null
+    private var dialReceiver: DialYouTubeReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -37,7 +38,7 @@ class RemoteServerService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(getString(R.string.server_notification_title))
-            .setContentText("同じLANから接続できます • ${LocalAddress.bestIpv4Address()}:$PORT • Cast実験中")
+            .setContentText("同じLANから接続できます • ${LocalAddress.bestIpv4Address()}:$PORT • YouTube Music Cast待受")
             .setOngoing(true)
             .build()
 
@@ -53,14 +54,14 @@ class RemoteServerService : Service() {
         startServer()
         registerNsdService()
 
-        CastDiscoveryExperiment(this).also { experiment ->
-            if (experiment.start()) castExperiment = experiment
+        DialYouTubeReceiver(this).also { receiver ->
+            if (receiver.start()) dialReceiver = receiver
         }
     }
 
     override fun onDestroy() {
-        castExperiment?.stop()
-        castExperiment = null
+        dialReceiver?.stop()
+        dialReceiver = null
         unregisterNsdService()
         running.set(false)
         runCatching { serverSocket?.close() }
@@ -137,9 +138,10 @@ class RemoteServerService : Service() {
                         "playSearch" -> "YouTube Musicへ検索を送信しました"
                         "play" -> "再生"
                         "pause" -> "一時停止"
+                        "stop" -> "停止"
                         "next" -> "次の曲"
                         "previous" -> "前の曲"
-                        "seekBy" -> "再生位置を変更しました"
+                        "seekBy", "seekTo" -> "再生位置を変更しました"
                         else -> "OK"
                     },
                     snapshot = MediaSessionBridge.snapshot(this),

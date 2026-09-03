@@ -84,9 +84,11 @@ data class RemoteResponse(
 fun RemoteRequest.toMediaCommand(): RemoteMediaCommand? = when (command) {
     "play" -> RemoteMediaCommand.Play
     "pause" -> RemoteMediaCommand.Pause
+    "stop" -> RemoteMediaCommand.Stop
     "next" -> RemoteMediaCommand.Next
     "previous" -> RemoteMediaCommand.Previous
     "seekBy" -> RemoteMediaCommand.SeekBy(value)
+    "seekTo" -> RemoteMediaCommand.SeekTo(value)
     "playSearch" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromSearch)
     "playUrl" -> text.takeIf { it.isNotBlank() }?.let(RemoteMediaCommand::PlayFromUrl)
     else -> null
