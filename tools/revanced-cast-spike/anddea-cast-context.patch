@@ -1,0 +1,9 @@
+diff --git a/patches/src/main/kotlin/app/morphe/patches/shared/gms/GmsCoreSupportPatch.kt b/patches/src/main/kotlin/app/morphe/patches/shared/gms/GmsCoreSupportPatch.kt
+--- a/patches/src/main/kotlin/app/morphe/patches/shared/gms/GmsCoreSupportPatch.kt
++++ b/patches/src/main/kotlin/app/morphe/patches/shared/gms/GmsCoreSupportPatch.kt
+@@ -1,6 +1,5 @@
+         val earlyReturnFingerprints = mutableListOf(
+-            castContextFetchFingerprint,
+             googlePlayUtilityFingerprint,
+             serviceCheckFingerprint,
+         )
