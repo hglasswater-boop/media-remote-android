@@ -13,13 +13,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Phase-1 Google Cast receiver experiment.
+ * Experimental Google Cast receiver discovery.
  *
- * This intentionally implements discovery and a TCP probe endpoint only. It does not pretend
- * that Cast V2 TLS/device authentication is complete. The goal is to verify two facts on real
- * hardware before bringing in a much larger protocol stack:
- * 1. YouTube Music sees this Android phone in its Cast picker.
- * 2. Selecting it causes the sender to contact TCP/8009.
+ * Phase 1 proved that YouTube Music can discover the service and probe TCP/8009. This phase
+ * mirrors the TXT/service identity of a real Chromecast more closely so we can test whether the
+ * sender promotes the device into its Cast picker before implementing the much larger TLS and
+ * Cast V2 device-authentication stack.
  */
 class CastDiscoveryExperiment(context: Context) {
     private val appContext = context.applicationContext
@@ -68,7 +67,7 @@ class CastDiscoveryExperiment(context: Context) {
         while (running.get()) {
             val socket = runCatching { server.accept() }.getOrNull() ?: break
             CastExperimentStore.recordProbe(appContext)
-            toast("Cast接続試行を検出 • TLS認証の手前まで到達")
+            toast("Cast接続試行を検出 • 一覧表示前の適格性チェック到達")
             probeClients.execute { holdProbe(socket) }
         }
     }
@@ -76,8 +75,8 @@ class CastDiscoveryExperiment(context: Context) {
     private fun holdProbe(socket: Socket) {
         socket.use {
             // A stock Cast sender should begin a TLS handshake here. We deliberately do not
-            // fake a successful handshake in this discovery spike. Keeping the socket alive
-            // briefly makes connection attempts observable without claiming protocol support.
+            // fake a successful handshake yet. The next phase starts here if discovery identity
+            // alone is still insufficient to make the receiver visible in the Cast picker.
             runCatching { Thread.sleep(PROBE_HOLD_MS) }
         }
     }
@@ -97,19 +96,25 @@ class CastDiscoveryExperiment(context: Context) {
             override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
         }
 
+        val deviceId = CastExperimentStore.deviceId(appContext)
         val friendlyName = "YT Music Remote ${Build.MODEL.take(18)}"
         val info = runCatching {
             NsdServiceInfo().apply {
-                serviceName = friendlyName
+                // Real Chromecast advertisements use a protocol-ish instance name and expose the
+                // human-readable name separately in `fn`. Some senders appear to care about this.
+                serviceName = "Chromecast-$deviceId"
                 serviceType = CAST_SERVICE_TYPE
                 port = CAST_PORT
-                setAttribute("id", CastExperimentStore.deviceId(appContext))
+                setAttribute("id", deviceId)
+                setAttribute("cd", CastExperimentStore.cloudDeviceId(appContext))
+                setAttribute("rm", CastExperimentStore.receiverMetrics(appContext))
                 setAttribute("ve", "05")
-                setAttribute("md", "Chromecast Ultra")
+                setAttribute("md", "Chromecast")
+                setAttribute("ic", "/setup/icon.png")
                 setAttribute("fn", friendlyName)
                 setAttribute("ca", "4101")
                 setAttribute("st", "0")
-                setAttribute("ic", "/setup/icon.png")
+                setAttribute("bs", CastExperimentStore.buildStatus(appContext))
                 setAttribute("nf", "1")
                 setAttribute("rs", "")
             }
