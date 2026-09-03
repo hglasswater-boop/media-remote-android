@@ -321,13 +321,65 @@ internal class YouTubeLoungeSession(
             "getVolume" -> sendVolume(message.aid)
             "getPlaylist" -> sendPlaylist(message.aid)
             "getSubtitlesTrack" -> sendMessage(message.aid, "onSubtitlesTrackChanged", emptyMap())
-            "loungeStatus" -> {
-                onStatus("YouTube Music送信端末とLounge接続成立")
-                senderConnected = true
-                startMediaSync()
-                publishMediaState(message.aid, force = true)
-                sendVolume(message.aid)
+            "loungeStatus" -> handleLoungeStatus(message.aid, payload)
+        }
+    }
+
+    private fun handleLoungeStatus(aid: Int, payload: JSONObject?) {
+        val senderPresent = remoteSenderPresent(payload)
+        if (senderPresent == false) {
+            if (senderConnected) {
+                senderConnected = false
+                stateSyncDirty.set(false)
+                synchronized(this) {
+                    pendingStateAid = null
+                    lastMediaSnapshot = null
+                }
+                onStatus("YouTube Music送信端末とLounge接続解除")
             }
+            return
+        }
+
+        // `devices` is present on normal Lounge status messages. If a future sender omits it,
+        // preserve compatibility by treating the status event itself as a connection signal.
+        val wasConnected = senderConnected
+        senderConnected = true
+        if (!wasConnected) {
+            stateSyncDirty.set(false)
+            synchronized(this) {
+                pendingStateAid = null
+                lastMediaSnapshot = null
+            }
+            onStatus("YouTube Music送信端末とLounge接続成立")
+        }
+
+        // Seed on every connected loungeStatus. This preserves the old force-refresh behavior while
+        // guaranteeing the reference receiver's navigation -> nowPlaying -> state ordering.
+        publishSenderConnectedState(aid)
+        sendVolume(aid)
+        startMediaSync()
+    }
+
+    /**
+     * Returns true when the Lounge status contains at least one REMOTE_CONTROL sender, false when
+     * a valid devices list contains none, and null when the payload cannot be interpreted.
+     */
+    private fun remoteSenderPresent(payload: JSONObject?): Boolean? {
+        val rawDevices = payload
+            ?.optString("devices")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        return runCatching {
+            val devices = JSONArray(rawDevices)
+            (0 until devices.length()).any { index ->
+                devices.optJSONObject(index)
+                    ?.optString("type")
+                    ?.equals("REMOTE_CONTROL", ignoreCase = true) == true
+            }
+        }.getOrElse { error ->
+            Log.w(TAG, "Unable to parse Lounge devices list", error)
+            null
         }
     }
 
@@ -366,6 +418,22 @@ internal class YouTubeLoungeSession(
         )
     }
 
+    /**
+     * Seed a newly connected sender in the same order as the reference receiver:
+     * navigation capabilities -> nowPlaying -> onStateChange. The ordering matters because the
+     * sender can otherwise process a state event while it still believes there is no active item.
+     */
+    @Synchronized
+    private fun publishSenderConnectedState(aid: Int?) {
+        if (!sessionReady || !senderConnected) return
+
+        val snapshot = MediaSessionBridge.snapshot(appContext)
+        sendHasPreviousNextChanged(aid, snapshot)
+        sendNowPlaying(aid, snapshot)
+        queueStateChange(aid)
+        lastMediaSnapshot = snapshot
+    }
+
     @Synchronized
     private fun publishMediaState(aid: Int?, force: Boolean) {
         if (!sessionReady || !senderConnected) return
@@ -373,9 +441,7 @@ internal class YouTubeLoungeSession(
         val snapshot = MediaSessionBridge.snapshot(appContext)
         val previous = lastMediaSnapshot
 
-        snapshot.mediaId
-            .takeIf(YOUTUBE_VIDEO_ID::matches)
-            ?.let(::setCurrentVideo)
+        syncCurrentVideo(snapshot)
 
         val mediaChanged = previous == null ||
             previous.mediaId != snapshot.mediaId ||
@@ -407,6 +473,10 @@ internal class YouTubeLoungeSession(
     }
 
     private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
+        // getNowPlaying can arrive immediately after reconnect, before periodic media sync has run.
+        // Always hydrate the Lounge identity from the authoritative MediaSession snapshot here.
+        syncCurrentVideo(snapshot)
+
         val state = loungePlayerState(snapshot)
         val durationSeconds = snapshot.durationMs / 1000.0
         val payload = linkedMapOf<String, Any>(
@@ -424,8 +494,14 @@ internal class YouTubeLoungeSession(
         sendMessage(aid, "nowPlaying", payload)
     }
 
+    private fun syncCurrentVideo(snapshot: MediaSnapshot) {
+        snapshot.mediaId
+            .takeIf(YOUTUBE_VIDEO_ID::matches)
+            ?.let(::setCurrentVideo)
+    }
+
     private fun queueStateChange(aid: Int?) {
-        if (!sessionReady || !running.get()) return
+        if (!sessionReady || !running.get() || !senderConnected) return
         if (aid != null) {
             synchronized(this) {
                 pendingStateAid = pendingStateAid?.let { maxOf(it, aid) } ?: aid
@@ -439,11 +515,17 @@ internal class YouTubeLoungeSession(
         if (!stateSyncQueued.compareAndSet(false, true)) return
         sendExecutor.execute {
             try {
-                while (sessionReady && running.get() && stateSyncDirty.getAndSet(false)) {
+                while (
+                    sessionReady &&
+                    running.get() &&
+                    senderConnected &&
+                    stateSyncDirty.getAndSet(false)
+                ) {
                     val responseAid = synchronized(this) {
                         pendingStateAid.also { pendingStateAid = null }
                     }
                     val freshSnapshot = MediaSessionBridge.snapshot(appContext)
+                    syncCurrentVideo(freshSnapshot)
                     sendMessageNow(
                         responseAid,
                         "onStateChange",
@@ -452,7 +534,7 @@ internal class YouTubeLoungeSession(
                 }
             } finally {
                 stateSyncQueued.set(false)
-                if (stateSyncDirty.get() && sessionReady && running.get()) {
+                if (stateSyncDirty.get() && sessionReady && running.get() && senderConnected) {
                     startStateSyncDrain()
                 }
             }
@@ -543,6 +625,7 @@ internal class YouTubeLoungeSession(
         }.onFailure { Log.w(TAG, "Failed to send Lounge response $name", it) }
     }
 
+    @Synchronized
     private fun setCurrentVideo(videoId: String) {
         if (videoId == currentVideoId) return
         currentVideoId = videoId
