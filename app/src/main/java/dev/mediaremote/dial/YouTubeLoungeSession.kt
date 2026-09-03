@@ -121,20 +121,17 @@ internal class YouTubeLoungeSession(
             DialIdentityStore.saveScreenId(appContext, it)
         }
 
-        val activeSid: String
-        val token: String
-        try {
-            activeSid = initialSid
-            token = getLoungeToken(initialSid)
-        } catch (error: Exception) {
-            if (storedSid == null) throw error
-
-            // A stored screen id can expire server-side. Generate one fresh id and retry once.
-            DialIdentityStore.clearScreenId(appContext)
-            val freshSid = generateScreenId()
-            DialIdentityStore.saveScreenId(appContext, freshSid)
-            activeSid = freshSid
-            token = getLoungeToken(freshSid)
+        val (activeSid, token) = if (storedSid == null) {
+            initialSid to getLoungeToken(initialSid)
+        } else {
+            runCatching { storedSid to getLoungeToken(storedSid) }
+                .getOrElse {
+                    // A stored screen id can expire server-side. Generate one fresh id and retry once.
+                    DialIdentityStore.clearScreenId(appContext)
+                    val freshSid = generateScreenId()
+                    DialIdentityStore.saveScreenId(appContext, freshSid)
+                    freshSid to getLoungeToken(freshSid)
+                }
         }
 
         screenId = activeSid
