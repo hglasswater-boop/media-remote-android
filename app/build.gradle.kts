@@ -48,6 +48,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
@@ -56,7 +62,9 @@ dependencies {
 
     implementation("androidx.core:core:1.19.0")
     implementation("androidx.activity:activity-compose:1.13.0")
-    implementation("androidx.fragment:fragment:1.9.0")
+    // Activity Result lint validates the Fragment runtime on the complete dependency graph.
+    // Code Scanner can otherwise resolve an older transitive Fragment artifact.
+    implementation("androidx.fragment:fragment-ktx:1.9.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("com.google.zxing:core:3.5.4")
