@@ -30,7 +30,12 @@ class DialYouTubeReceiver(context: Context) {
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
         val address = LocalAddress.bestIpv4Address()
-        if (address.isBlank() || address == "0.0.0.0" || address.startsWith("127.")) {
+        if (
+            address.isBlank() ||
+            address == "Unavailable" ||
+            address == "0.0.0.0" ||
+            address.startsWith("127.")
+        ) {
             running.set(false)
             toast("DIAL Castを開始できません • Wi-Fi/LANアドレスなし")
             return false
@@ -45,7 +50,7 @@ class DialYouTubeReceiver(context: Context) {
             loungeSession = lounge,
             identityUuid = identity,
             friendlyName = friendlyName,
-            hostAddress = { LocalAddress.bestIpv4Address() },
+            hostAddress = { address },
             onStatus = ::status,
         )
         if (!http.start()) {
@@ -57,7 +62,7 @@ class DialYouTubeReceiver(context: Context) {
         val ssdp = DialSsdpAdvertiser(
             identityUuid = identity,
             httpPort = http.port,
-            hostAddress = { LocalAddress.bestIpv4Address() },
+            hostAddress = { address },
             onProbe = { status("YouTube MusicのDIAL検索を検出") },
         )
         if (!ssdp.start()) {
