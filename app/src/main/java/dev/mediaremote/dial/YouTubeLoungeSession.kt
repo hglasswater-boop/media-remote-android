@@ -48,18 +48,24 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentVideoId: String? = null
     @Volatile private var currentListId: String? = null
 
-    fun start() {
+    fun start(onReady: (() -> Unit)? = null) {
         if (!running.compareAndSet(false, true)) return
         bootstrapExecutor.execute {
+            onStatus("YouTube Loungeを準備中")
             while (running.get() && !sessionReady) {
                 runCatching { establish() }
                     .onFailure {
                         Log.w(TAG, "Lounge establish failed", it)
-                        onStatus("YouTube接続準備を再試行中")
+                        onStatus("YouTube Lounge準備を再試行中")
                         sleepInterruptibly(3_000)
                     }
             }
-            if (running.get() && sessionReady) startRpcLoop()
+            if (running.get() && sessionReady) {
+                onStatus("YouTube Lounge準備完了")
+                runCatching { onReady?.invoke() }
+                    .onFailure { Log.e(TAG, "Lounge ready callback failed", it) }
+                startRpcLoop()
+            }
         }
     }
 
@@ -78,15 +84,22 @@ internal class YouTubeLoungeSession(
     fun registerPairingCode(code: String): Boolean {
         val cleanCode = code.trim()
         if (cleanCode.isBlank()) return false
+        onStatus("YouTube MusicのpairingCodeを受信")
 
-        // DIAL launch can arrive immediately after discovery. Give session bootstrap a short window
-        // so the sender does not have to retry just because the lounge token is still being fetched.
-        val deadline = System.currentTimeMillis() + 7_000
+        // DIAL is normally exposed only after establish() succeeds. Keep a short guard here for
+        // races during service restart, but never make the sender wait for many seconds.
+        val deadline = System.currentTimeMillis() + 1_500
         while (running.get() && !sessionReady && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100)
+            Thread.sleep(50)
         }
-        val sid = screenId ?: return false
+        val sid = screenId
+        if (!sessionReady || sid.isNullOrBlank()) {
+            Log.w(TAG, "Pairing requested before Lounge session was ready")
+            onStatus("Lounge未準備のためpairing失敗")
+            return false
+        }
 
+        onStatus("YouTube Loungeへpairing登録中")
         val response = runCatching {
             LoungeHttp.postForm(
                 URL_REGISTER_PAIRING_CODE,
@@ -101,14 +114,16 @@ internal class YouTubeLoungeSession(
             )
         }.getOrElse {
             Log.w(TAG, "Pairing registration failed", it)
+            onStatus("YouTube Lounge pairing通信エラー")
             return false
         }
 
         if (response.code !in 200..299) {
             Log.w(TAG, "Pairing registration HTTP ${response.code}: ${response.body}")
+            onStatus("YouTube Lounge pairing失敗 HTTP ${response.code}")
             return false
         }
-        onStatus("YouTube Musicから接続されました")
+        onStatus("YouTube Musicのpairing登録成功")
         return true
     }
 
@@ -147,7 +162,6 @@ internal class YouTubeLoungeSession(
         check(!bindParams.gsessionId.isNullOrBlank()) { "Lounge bind did not provide gsessionid" }
 
         sessionReady = true
-        onStatus("YouTube Music Cast待受中")
         Log.i(TAG, "Lounge session ready for theme=m screenId=$activeSid")
     }
 
@@ -246,7 +260,7 @@ internal class YouTubeLoungeSession(
             "getVolume" -> sendVolume(message.aid)
             "getPlaylist" -> sendPlaylist(message.aid)
             "getSubtitlesTrack" -> sendMessage(message.aid, "onSubtitlesTrackChanged", emptyMap())
-            "loungeStatus" -> onStatus("YouTube Music送信端末が接続中")
+            "loungeStatus" -> onStatus("YouTube Music送信端末とLounge接続成立")
         }
     }
 

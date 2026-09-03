@@ -9,6 +9,7 @@ import android.util.Log
 import android.widget.Toast
 import dev.mediaremote.network.LocalAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Stock YouTube / YouTube Music receiver path based on DIAL + YouTube Lounge.
@@ -21,11 +22,12 @@ class DialYouTubeReceiver(context: Context) {
     private val appContext = context.applicationContext
     private val running = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val lastProbeStatusAt = AtomicLong(0L)
 
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var loungeSession: YouTubeLoungeSession? = null
-    private var httpServer: DialHttpServer? = null
-    private var ssdpAdvertiser: DialSsdpAdvertiser? = null
+    @Volatile private var loungeSession: YouTubeLoungeSession? = null
+    @Volatile private var httpServer: DialHttpServer? = null
+    @Volatile private var ssdpAdvertiser: DialSsdpAdvertiser? = null
 
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
@@ -44,8 +46,33 @@ class DialYouTubeReceiver(context: Context) {
         acquireMulticastLock()
         val friendlyName = "YT Music Remote ${Build.MODEL.take(20)}"
         val identity = DialIdentityStore.deviceUuid(appContext)
-
         val lounge = YouTubeLoungeSession(appContext, friendlyName, ::status)
+        loungeSession = lounge
+
+        // Match the established yt-cast-receiver startup order: establish the YouTube Lounge
+        // session first, and only then publish the DIAL endpoint. Once a device is visible in the
+        // sender's Cast list it is therefore already able to register the DIAL pairingCode.
+        lounge.start {
+            if (!running.get()) return@start
+            startDialEndpoints(
+                address = address,
+                friendlyName = friendlyName,
+                identity = identity,
+                lounge = lounge,
+            )
+        }
+        Log.i(TAG, "Lounge bootstrap started for $address")
+        return true
+    }
+
+    private fun startDialEndpoints(
+        address: String,
+        friendlyName: String,
+        identity: String,
+        lounge: YouTubeLoungeSession,
+    ) {
+        if (!running.get() || httpServer != null || ssdpAdvertiser != null) return
+
         val http = DialHttpServer(
             loungeSession = lounge,
             identityUuid = identity,
@@ -54,31 +81,31 @@ class DialYouTubeReceiver(context: Context) {
             onStatus = ::status,
         )
         if (!http.start()) {
-            releaseMulticastLock()
-            running.set(false)
-            return false
+            status("DIAL HTTP待受を開始できません")
+            return
         }
 
         val ssdp = DialSsdpAdvertiser(
             identityUuid = identity,
             httpPort = http.port,
             hostAddress = { address },
-            onProbe = { status("YouTube MusicのDIAL検索を検出") },
+            onProbe = ::probeDetected,
         )
         if (!ssdp.start()) {
             http.stop()
-            releaseMulticastLock()
-            running.set(false)
-            return false
+            status("DIAL SSDP公開を開始できません")
+            return
         }
 
-        loungeSession = lounge
+        if (!running.get()) {
+            ssdp.stop()
+            http.stop()
+            return
+        }
         httpServer = http
         ssdpAdvertiser = ssdp
-        lounge.start()
-        status("YouTube Music Cast待受を開始")
-        Log.i(TAG, "DIAL receiver started at $address:${http.port}")
-        return true
+        status("YouTube Music Cast待受中")
+        Log.i(TAG, "DIAL receiver published at $address:${http.port}")
     }
 
     fun stop() {
@@ -90,6 +117,18 @@ class DialYouTubeReceiver(context: Context) {
         loungeSession?.stop()
         loungeSession = null
         releaseMulticastLock()
+    }
+
+    private fun probeDetected() {
+        // YouTube Music sends several M-SEARCH packets while its Cast sheet is open. Do not let
+        // those repeated probe toasts hide the more useful launch / pairing stage diagnostics.
+        val now = System.currentTimeMillis()
+        while (true) {
+            val previous = lastProbeStatusAt.get()
+            if (now - previous < PROBE_STATUS_INTERVAL_MS) return
+            if (lastProbeStatusAt.compareAndSet(previous, now)) break
+        }
+        status("YouTube MusicのDIAL検索を検出")
     }
 
     private fun acquireMulticastLock() {
@@ -118,5 +157,6 @@ class DialYouTubeReceiver(context: Context) {
 
     companion object {
         private const val TAG = "DialYouTubeReceiver"
+        private const val PROBE_STATUS_INTERVAL_MS = 5_000L
     }
 }
