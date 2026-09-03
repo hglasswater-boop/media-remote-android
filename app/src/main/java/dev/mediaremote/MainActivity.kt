@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.mediaremote.network.PairingLinks
+import dev.mediaremote.share.ShareShortcutPublisher
 import dev.mediaremote.ui.YouTubeMusicRemoteApp
 import dev.mediaremote.update.ManualUpdateCheckButton
 import dev.mediaremote.update.StartupUpdateCheck
@@ -30,6 +31,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ShareShortcutPublisher.publish(this)
         handleIncomingIntent(intent)
         requestRuntimePermissions()
 
@@ -75,6 +77,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_SEND -> {
                 if (intent.type == "text/plain") {
                     sharedTextState.value = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ShareShortcutPublisher.reportUsed(this)
                 }
             }
 
