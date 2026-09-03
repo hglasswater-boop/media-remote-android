@@ -44,6 +44,10 @@
                     android:host="pair"
                     android:scheme="mediaremote" />
             </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service
