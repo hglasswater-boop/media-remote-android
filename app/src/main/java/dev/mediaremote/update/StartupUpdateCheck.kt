@@ -2,7 +2,11 @@ package dev.mediaremote.update
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -20,9 +24,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import dev.mediaremote.BuildConfig
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,6 +39,7 @@ private data class AvailableRelease(
     val versionName: String,
     val buildNumber: Int,
     val releaseUrl: String,
+    val apkUrl: String,
 )
 
 private object ReleaseUpdateChecker {
@@ -40,7 +48,8 @@ private object ReleaseUpdateChecker {
     private const val PREFS = "release_update_check"
     private const val LAST_CHECK = "last_check"
     private const val AUTO_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
-    private val assetPattern = Regex("^MediaRemote-(.+)-b(\\d+)-(?:release|debug)\\.apk$")
+    private val releaseAssetPattern = Regex("^MediaRemote-(.+)-b(\\d+)-release\\.apk$")
+    private val compatibilityAssetPattern = Regex("^MediaRemote-(.+)-b(\\d+)-debug\\.apk$")
 
     fun isDue(context: Context): Boolean {
         val last = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -74,27 +83,161 @@ private object ReleaseUpdateChecker {
             val releaseUrl = json.optString("html_url")
             val assets = json.getJSONArray("assets")
 
-            var newest: AvailableRelease? = null
+            var releaseAsset: AvailableRelease? = null
+            var compatibilityAsset: AvailableRelease? = null
+
             for (index in 0 until assets.length()) {
                 val asset = assets.getJSONObject(index)
                 val name = asset.optString("name")
-                val match = assetPattern.matchEntire(name) ?: continue
-                val build = match.groupValues[2].toIntOrNull() ?: continue
-                val candidate = AvailableRelease(
-                    versionName = match.groupValues[1],
-                    buildNumber = build,
-                    releaseUrl = releaseUrl,
-                )
-                if (newest == null || candidate.buildNumber > newest.buildNumber) {
-                    newest = candidate
+                val apkUrl = asset.optString("browser_download_url")
+                if (apkUrl.isBlank()) continue
+
+                releaseAssetPattern.matchEntire(name)?.let { match ->
+                    val build = match.groupValues[2].toIntOrNull() ?: return@let
+                    val candidate = AvailableRelease(
+                        versionName = match.groupValues[1],
+                        buildNumber = build,
+                        releaseUrl = releaseUrl,
+                        apkUrl = apkUrl,
+                    )
+                    if (releaseAsset == null || candidate.buildNumber > releaseAsset!!.buildNumber) {
+                        releaseAsset = candidate
+                    }
+                }
+
+                compatibilityAssetPattern.matchEntire(name)?.let { match ->
+                    val build = match.groupValues[2].toIntOrNull() ?: return@let
+                    val candidate = AvailableRelease(
+                        versionName = match.groupValues[1],
+                        buildNumber = build,
+                        releaseUrl = releaseUrl,
+                        apkUrl = apkUrl,
+                    )
+                    if (
+                        compatibilityAsset == null ||
+                        candidate.buildNumber > compatibilityAsset!!.buildNumber
+                    ) {
+                        compatibilityAsset = candidate
+                    }
                 }
             }
 
-            newest?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE }
+            (releaseAsset ?: compatibilityAsset)
+                ?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE }
         } finally {
             connection.disconnect()
         }
     }
+}
+
+private object InAppUpdateInstaller {
+    private const val MIME_APK = "application/vnd.android.package-archive"
+
+    suspend fun downloadAndVerify(context: Context, release: AvailableRelease): File =
+        withContext(Dispatchers.IO) {
+            val updateDir = File(context.cacheDir, "updates").apply { mkdirs() }
+            updateDir.listFiles()?.forEach { existing ->
+                if (existing.name != ".nomedia") existing.delete()
+            }
+
+            val partial = File(updateDir, "MediaRemote-${release.buildNumber}.apk.part")
+            val apk = File(updateDir, "MediaRemote-${release.buildNumber}.apk")
+
+            val connection = (URL(release.apkUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 60_000
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                setRequestProperty("Accept", "application/octet-stream")
+                setRequestProperty("User-Agent", "YT-Music-Remote/${BuildConfig.VERSION_NAME}")
+            }
+
+            try {
+                val code = connection.responseCode
+                if (code !in 200..299) error("APK download HTTP $code")
+
+                connection.inputStream.use { input ->
+                    partial.outputStream().buffered().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } finally {
+                connection.disconnect()
+            }
+
+            if (!partial.isFile || partial.length() <= 0L) {
+                partial.delete()
+                error("ダウンロードしたAPKが空です")
+            }
+
+            if (!partial.renameTo(apk)) {
+                partial.copyTo(apk, overwrite = true)
+                partial.delete()
+            }
+
+            runCatching { verifyPackage(context, apk, release) }
+                .onFailure { apk.delete() }
+                .getOrThrow()
+
+            apk
+        }
+
+    fun openInstaller(context: Context, apk: File) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.files",
+            apk,
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, MIME_APK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun verifyPackage(context: Context, apk: File, release: AvailableRelease) {
+        val packageManager = context.packageManager
+        val downloaded = packageManager.getPackageArchiveInfo(
+            apk.absolutePath,
+            PackageManager.GET_SIGNING_CERTIFICATES,
+        ) ?: error("APKとして読み取れません")
+        val installed = packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_SIGNING_CERTIFICATES,
+        )
+
+        if (downloaded.packageName != context.packageName) {
+            error("更新APKのpackage名が一致しません")
+        }
+        if (downloaded.longVersionCode != release.buildNumber.toLong()) {
+            error("更新APKのbuild番号がRelease情報と一致しません")
+        }
+        if (downloaded.longVersionCode <= installed.longVersionCode) {
+            error("現在より新しいAPKではありません")
+        }
+
+        val installedDigests = installed.signingInfo?.apkContentsSigners
+            ?.map { signature -> sha256(signature.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+        val downloadedDigests = downloaded.signingInfo?.apkContentsSigners
+            ?.map { signature -> sha256(signature.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+
+        if (installedDigests.isEmpty() || downloadedDigests.isEmpty()) {
+            error("APK署名を確認できません")
+        }
+        if (installedDigests.intersect(downloadedDigests).isEmpty()) {
+            error("APK署名が現在のアプリと一致しません")
+        }
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }
 
 @Composable
@@ -115,10 +258,6 @@ fun StartupUpdateCheck() {
         UpdateAvailableDialog(
             available = available,
             onDismiss = { release = null },
-            onOpen = {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(available.releaseUrl)))
-                release = null
-            },
         )
     }
 }
@@ -164,10 +303,6 @@ fun ManualUpdateCheckButton(
         UpdateAvailableDialog(
             available = available,
             onDismiss = { release = null },
-            onOpen = {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(available.releaseUrl)))
-                release = null
-            },
         )
     }
 
@@ -189,29 +324,95 @@ fun ManualUpdateCheckButton(
 private fun UpdateAvailableDialog(
     available: AvailableRelease,
     onDismiss: () -> Unit,
-    onOpen: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var downloading by remember(available.buildNumber) { mutableStateOf(false) }
+    var errorMessage by remember(available.buildNumber) { mutableStateOf<String?>(null) }
+
+    val startDownload: () -> Unit = {
+        if (!downloading) {
+            downloading = true
+            errorMessage = null
+            scope.launch {
+                runCatching {
+                    InAppUpdateInstaller.downloadAndVerify(context, available)
+                }.onSuccess { apk ->
+                    downloading = false
+                    runCatching { InAppUpdateInstaller.openInstaller(context, apk) }
+                        .onFailure { error ->
+                            errorMessage = error.message ?: "インストーラを開けませんでした"
+                        }
+                }.onFailure { error ->
+                    downloading = false
+                    errorMessage = error.message ?: "APKをダウンロードできませんでした"
+                }
+            }
+        }
+    }
+
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        if (context.packageManager.canRequestPackageInstalls()) {
+            startDownload()
+        } else {
+            errorMessage = "更新には「この提供元のアプリを許可」をONにしてください。"
+        }
+    }
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (!downloading) onDismiss()
+        },
         title = { Text("YT Music Remoteを更新できます") },
         text = {
             Column {
                 Text("${available.versionName} (build ${available.buildNumber}) が利用できます。")
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "GitHub Releasesで更新内容と署名済みAPKを確認できます。",
+                    if (downloading) {
+                        "署名済みAPKをダウンロード中…\n完了したらインストール画面を自動で開きます。"
+                    } else {
+                        "APKをアプリ内で取得し、署名を検証してからインストール画面を自動で開きます。"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                errorMessage?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = onOpen) {
-                Text("更新ページを開く")
+            TextButton(
+                enabled = !downloading,
+                onClick = {
+                    if (context.packageManager.canRequestPackageInstalls()) {
+                        startDownload()
+                    } else {
+                        installPermissionLauncher.launch(
+                            Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:${context.packageName}"),
+                            ),
+                        )
+                    }
+                },
+            ) {
+                Text(if (downloading) "ダウンロード中…" else "更新する")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                enabled = !downloading,
+                onClick = onDismiss,
+            ) {
                 Text("後で")
             }
         },
