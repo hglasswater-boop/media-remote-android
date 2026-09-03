@@ -44,6 +44,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var rpcConnection: HttpURLConnection? = null
     @Volatile private var rpcFuture: Future<*>? = null
     @Volatile private var sessionReady = false
+    @Volatile private var rpcEstablished = false
     private val outgoingOffset = AtomicInteger(0)
     @Volatile private var currentVideoId: String? = null
     @Volatile private var currentListId: String? = null
@@ -61,10 +62,17 @@ internal class YouTubeLoungeSession(
                     }
             }
             if (running.get() && sessionReady) {
-                onStatus("YouTube Lounge準備完了")
-                runCatching { onReady?.invoke() }
-                    .onFailure { Log.e(TAG, "Lounge ready callback failed", it) }
-                startRpcLoop()
+                onStatus("YouTube Lounge初期bind完了")
+                // yt-cast-receiver does not publish DIAL after only the initial bind. It first
+                // establishes the long-poll RPC connection and only then starts the DIAL server.
+                // Keep the same ordering so a sender can never discover a receiver whose Lounge
+                // screen exists server-side but is not yet listening for sender events.
+                startRpcLoop {
+                    if (!running.get()) return@startRpcLoop
+                    onStatus("YouTube Lounge準備完了")
+                    runCatching { onReady?.invoke() }
+                        .onFailure { Log.e(TAG, "Lounge ready callback failed", it) }
+                }
             }
         }
     }
@@ -72,6 +80,7 @@ internal class YouTubeLoungeSession(
     fun stop() {
         running.set(false)
         sessionReady = false
+        rpcEstablished = false
         rpcConnection?.disconnect()
         rpcConnection = null
         rpcFuture?.cancel(true)
@@ -86,16 +95,21 @@ internal class YouTubeLoungeSession(
         if (cleanCode.isBlank()) return false
         onStatus("YouTube MusicのpairingCodeを受信")
 
-        // DIAL is normally exposed only after establish() succeeds. Keep a short guard here for
-        // races during service restart, but never make the sender wait for many seconds.
+        // DIAL is normally exposed only after both establish() and the first RPC connection have
+        // succeeded. Keep a short guard here for service-restart races, but never hold the sender
+        // request open for many seconds.
         val deadline = System.currentTimeMillis() + 1_500
-        while (running.get() && !sessionReady && System.currentTimeMillis() < deadline) {
+        while (
+            running.get() &&
+            (!sessionReady || !rpcEstablished) &&
+            System.currentTimeMillis() < deadline
+        ) {
             Thread.sleep(50)
         }
         val sid = screenId
-        if (!sessionReady || sid.isNullOrBlank()) {
-            Log.w(TAG, "Pairing requested before Lounge session was ready")
-            onStatus("Lounge未準備のためpairing失敗")
+        if (!sessionReady || !rpcEstablished || sid.isNullOrBlank()) {
+            Log.w(TAG, "Pairing requested before Lounge RPC was ready")
+            onStatus("Lounge RPC未準備のためpairing失敗")
             return false
         }
 
@@ -129,6 +143,7 @@ internal class YouTubeLoungeSession(
 
     private fun establish() {
         sessionReady = false
+        rpcEstablished = false
 
         val storedSid = DialIdentityStore.screenId(appContext)
             ?.takeIf { it.isNotBlank() }
@@ -162,7 +177,7 @@ internal class YouTubeLoungeSession(
         check(!bindParams.gsessionId.isNullOrBlank()) { "Lounge bind did not provide gsessionid" }
 
         sessionReady = true
-        Log.i(TAG, "Lounge session ready for theme=m screenId=$activeSid")
+        Log.i(TAG, "Lounge initial bind ready for theme=m screenId=$activeSid")
     }
 
     private fun generateScreenId(): String {
@@ -185,14 +200,24 @@ internal class YouTubeLoungeSession(
             ?: error("Missing loungeToken")
     }
 
-    private fun startRpcLoop() {
+    private fun startRpcLoop(onFirstConnected: (() -> Unit)? = null) {
         rpcFuture = rpcExecutor.submit {
+            var readyCallbackFired = false
             while (running.get()) {
                 try {
                     val url = "$URL_BIND?${bindParams.rpcQuery()}"
                     val connection = LoungeHttp.openLongPoll(url)
                     rpcConnection = connection
                     BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
+                        if (!readyCallbackFired) {
+                            rpcEstablished = true
+                            readyCallbackFired = true
+                            Log.i(TAG, "Lounge RPC connection established")
+                            onStatus("YouTube Lounge RPC接続完了")
+                            runCatching { onFirstConnected?.invoke() }
+                                .onFailure { Log.e(TAG, "Lounge RPC ready callback failed", it) }
+                        }
+
                         while (running.get()) {
                             val line = reader.readLine() ?: break
                             val messages = LoungeMessage.parseMany(line)
