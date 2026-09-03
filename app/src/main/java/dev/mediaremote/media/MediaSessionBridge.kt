@@ -8,14 +8,19 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.os.SystemClock
 import android.provider.MediaStore
 
 data class MediaSnapshot(
     val available: Boolean,
+    val mediaId: String = "",
     val title: String = "",
     val artist: String = "",
     val album: String = "",
     val playing: Boolean = false,
+    val playbackState: Int = PlaybackState.STATE_NONE,
+    val playbackSpeed: Float = 0f,
+    val actions: Long = 0L,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val packageName: String = "",
@@ -56,17 +61,48 @@ object MediaSessionBridge {
         val controller = controller(context) ?: return MediaSnapshot(available = false)
         val metadata = controller.metadata
         val playbackState = controller.playbackState
+        val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
 
         return MediaSnapshot(
             available = true,
+            mediaId = metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty(),
             title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
             artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
             album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
             playing = playbackState?.state == PlaybackState.STATE_PLAYING,
-            positionMs = playbackState?.position ?: 0L,
-            durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
+            playbackState = playbackState?.state ?: PlaybackState.STATE_NONE,
+            playbackSpeed = playbackState?.playbackSpeed ?: 0f,
+            actions = playbackState?.actions ?: 0L,
+            positionMs = currentPositionMs(playbackState, durationMs),
+            durationMs = durationMs,
             packageName = controller.packageName,
         )
+    }
+
+    /**
+     * Android's PlaybackState.position is the position at lastPositionUpdateTime, not necessarily
+     * the position at the instant we query it. Extrapolate while playing so remote UIs receive a
+     * moving clock instead of repeatedly seeing the same stale base position.
+     */
+    private fun currentPositionMs(state: PlaybackState?, durationMs: Long): Long {
+        if (state == null) return 0L
+
+        var position = state.position.coerceAtLeast(0L)
+        if (
+            state.state == PlaybackState.STATE_PLAYING &&
+            state.lastPositionUpdateTime > 0L &&
+            state.playbackSpeed != 0f
+        ) {
+            val elapsed = (SystemClock.elapsedRealtime() - state.lastPositionUpdateTime)
+                .coerceAtLeast(0L)
+            position += (elapsed * state.playbackSpeed).toLong()
+        }
+
+        return if (durationMs > 0L) {
+            position.coerceIn(0L, durationMs)
+        } else {
+            position.coerceAtLeast(0L)
+        }
     }
 
     fun execute(context: Context, command: RemoteMediaCommand): Boolean {
@@ -85,7 +121,12 @@ object MediaSessionBridge {
                     RemoteMediaCommand.Next -> controls.skipToNext().let { true }
                     RemoteMediaCommand.Previous -> controls.skipToPrevious().let { true }
                     is RemoteMediaCommand.SeekBy -> {
-                        val current = activeController.playbackState?.position ?: 0L
+                        val current = currentPositionMs(
+                            activeController.playbackState,
+                            activeController.metadata
+                                ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                                ?: 0L,
+                        )
                         controls.seekTo(clampSeekTarget(activeController, current + command.deltaMs))
                         true
                     }
