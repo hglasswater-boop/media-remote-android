@@ -16,8 +16,8 @@ android {
         applicationId = "dev.mediaremote"
         minSdk = 28
         targetSdk = 37
-        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 13
-        versionName = "0.6.5"
+        versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 14
+        versionName = "0.6.6"
     }
 
     signingConfigs {

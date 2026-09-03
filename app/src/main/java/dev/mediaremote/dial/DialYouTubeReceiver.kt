@@ -79,7 +79,7 @@ class DialYouTubeReceiver(context: Context) {
             onStatus = ::status,
         )
         if (!http.start()) {
-            status("DIAL HTTP待受を開始できません")
+            toast("DIAL HTTP待受を開始できません")
             return
         }
 
@@ -91,7 +91,7 @@ class DialYouTubeReceiver(context: Context) {
         )
         if (!ssdp.start()) {
             http.stop()
-            status("DIAL SSDP公開を開始できません")
+            toast("DIAL SSDP公開を開始できません")
             return
         }
 
@@ -139,13 +139,17 @@ class DialYouTubeReceiver(context: Context) {
     }
 
     private fun status(message: String) {
+        // Lounge and DIAL status callbacks include normal protocol chatter and can be emitted many
+        // times during a healthy Cast session. Keep those diagnostics in logcat only.
         Log.i(TAG, message)
+    }
+
+    private fun toast(message: String) {
+        Log.w(TAG, message)
         mainHandler.post {
             Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
         }
     }
-
-    private fun toast(message: String) = status(message)
 
     companion object {
         private const val TAG = "DialYouTubeReceiver"
