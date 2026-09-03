@@ -41,6 +41,8 @@ internal class YouTubeLoungeSession(
     private val sendExecutor = Executors.newSingleThreadExecutor()
     private val mediaSyncExecutor = Executors.newSingleThreadScheduledExecutor()
     private val running = AtomicBoolean(false)
+    private val stateSyncQueued = AtomicBoolean(false)
+    private val stateSyncDirty = AtomicBoolean(false)
     private val bindParams = LoungeBindParams(
         deviceId = DialIdentityStore.loungeDeviceId(appContext),
         screenName = screenName,
@@ -54,6 +56,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var sessionReady = false
     @Volatile private var rpcEstablished = false
     @Volatile private var senderConnected = false
+    @Volatile private var pendingStateAid: Int? = null
     private val outgoingOffset = AtomicInteger(0)
     @Volatile private var currentVideoId: String? = null
     @Volatile private var currentListId: String? = null
@@ -94,6 +97,8 @@ internal class YouTubeLoungeSession(
         sessionReady = false
         rpcEstablished = false
         senderConnected = false
+        stateSyncDirty.set(false)
+        synchronized(this) { pendingStateAid = null }
         mediaSyncFuture?.cancel(true)
         mediaSyncFuture = null
         rpcConnection?.disconnect()
@@ -311,7 +316,7 @@ internal class YouTubeLoungeSession(
             "getNowPlaying" -> {
                 val snapshot = MediaSessionBridge.snapshot(appContext)
                 sendNowPlaying(message.aid, snapshot)
-                sendStateChange(message.aid, snapshot)
+                queueStateChange(message.aid)
             }
             "getVolume" -> sendVolume(message.aid)
             "getPlaylist" -> sendPlaylist(message.aid)
@@ -385,10 +390,11 @@ internal class YouTubeLoungeSession(
         val positionChanged = previous == null ||
             abs(previous.positionMs - snapshot.positionMs) >= POSITION_CHANGE_THRESHOLD_MS
 
-        // The sender can extrapolate a playing clock from onStateChange, but periodic updates keep
-        // long sessions and seeks pinned to the playback phone's authoritative MediaSession clock.
+        // Do not queue a historical position for every timer tick. A slow Lounge POST can otherwise
+        // build a backlog and make the sender display a position that is seconds behind playback.
+        // queueStateChange() coalesces pending updates and samples MediaSession again at send time.
         if (force || stateChanged || positionChanged) {
-            sendStateChange(aid, snapshot)
+            queueStateChange(aid)
         }
         if (force || mediaChanged || stateChanged) {
             sendNowPlaying(aid, snapshot)
@@ -418,21 +424,52 @@ internal class YouTubeLoungeSession(
         sendMessage(aid, "nowPlaying", payload)
     }
 
-    private fun sendStateChange(aid: Int?, snapshot: MediaSnapshot) {
+    private fun queueStateChange(aid: Int?) {
+        if (!sessionReady || !running.get()) return
+        if (aid != null) {
+            synchronized(this) {
+                pendingStateAid = pendingStateAid?.let { maxOf(it, aid) } ?: aid
+            }
+        }
+        stateSyncDirty.set(true)
+        startStateSyncDrain()
+    }
+
+    private fun startStateSyncDrain() {
+        if (!stateSyncQueued.compareAndSet(false, true)) return
+        sendExecutor.execute {
+            try {
+                while (sessionReady && running.get() && stateSyncDirty.getAndSet(false)) {
+                    val responseAid = synchronized(this) {
+                        pendingStateAid.also { pendingStateAid = null }
+                    }
+                    val freshSnapshot = MediaSessionBridge.snapshot(appContext)
+                    sendMessageNow(
+                        responseAid,
+                        "onStateChange",
+                        stateChangePayload(freshSnapshot),
+                    )
+                }
+            } finally {
+                stateSyncQueued.set(false)
+                if (stateSyncDirty.get() && sessionReady && running.get()) {
+                    startStateSyncDrain()
+                }
+            }
+        }
+    }
+
+    private fun stateChangePayload(snapshot: MediaSnapshot): Map<String, Any> {
         val state = loungePlayerState(snapshot)
         val durationSeconds = snapshot.durationMs / 1000.0
-        sendMessage(
-            aid,
-            "onStateChange",
-            linkedMapOf(
-                "state" to state,
-                "currentTime" to (snapshot.positionMs / 1000.0),
-                "duration" to durationSeconds,
-                "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
-                "seekableStartTime" to 0,
-                "seekableEndTime" to durationSeconds,
-                "cpn" to currentCpn,
-            ),
+        return linkedMapOf(
+            "state" to state,
+            "currentTime" to (snapshot.positionMs / 1000.0),
+            "duration" to durationSeconds,
+            "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
+            "seekableStartTime" to 0,
+            "seekableEndTime" to durationSeconds,
+            "cpn" to currentCpn,
         )
     }
 
@@ -482,23 +519,28 @@ internal class YouTubeLoungeSession(
     private fun sendMessage(aid: Int?, name: String, values: Map<String, Any>) {
         if (!sessionReady || !running.get()) return
         sendExecutor.execute {
-            runCatching {
-                val form = linkedMapOf<String, String>(
-                    "count" to "1",
-                    "ofs" to outgoingOffset.getAndIncrement().toString(),
-                    "req0__sc" to name,
-                )
-                values.forEach { (key, value) ->
-                    form["req0_$key"] = when (value) {
-                        is JSONObject, is JSONArray -> value.toString()
-                        else -> value.toString()
-                    }
-                }
-                val url = "$URL_BIND?${bindParams.sendMessageQuery(aid)}"
-                val response = LoungeHttp.postForm(url, form)
-                check(response.code in 200..299) { "send message HTTP ${response.code}" }
-            }.onFailure { Log.w(TAG, "Failed to send Lounge response $name", it) }
+            sendMessageNow(aid, name, values)
         }
+    }
+
+    private fun sendMessageNow(aid: Int?, name: String, values: Map<String, Any>) {
+        if (!sessionReady || !running.get()) return
+        runCatching {
+            val form = linkedMapOf<String, String>(
+                "count" to "1",
+                "ofs" to outgoingOffset.getAndIncrement().toString(),
+                "req0__sc" to name,
+            )
+            values.forEach { (key, value) ->
+                form["req0_$key"] = when (value) {
+                    is JSONObject, is JSONArray -> value.toString()
+                    else -> value.toString()
+                }
+            }
+            val url = "$URL_BIND?${bindParams.sendMessageQuery(aid)}"
+            val response = LoungeHttp.postForm(url, form)
+            check(response.code in 200..299) { "send message HTTP ${response.code}" }
+        }.onFailure { Log.w(TAG, "Failed to send Lounge response $name", it) }
     }
 
     private fun setCurrentVideo(videoId: String) {
