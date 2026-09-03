@@ -9,7 +9,6 @@ import android.util.Log
 import android.widget.Toast
 import dev.mediaremote.network.LocalAddress
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Stock YouTube / YouTube Music receiver path based on DIAL + YouTube Lounge.
@@ -22,7 +21,6 @@ class DialYouTubeReceiver(context: Context) {
     private val appContext = context.applicationContext
     private val running = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val lastProbeStatusAt = AtomicLong(0L)
 
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var loungeSession: YouTubeLoungeSession? = null
@@ -120,15 +118,9 @@ class DialYouTubeReceiver(context: Context) {
     }
 
     private fun probeDetected() {
-        // YouTube Music sends several M-SEARCH packets while its Cast sheet is open. Do not let
-        // those repeated probe toasts hide the more useful launch / pairing stage diagnostics.
-        val now = System.currentTimeMillis()
-        while (true) {
-            val previous = lastProbeStatusAt.get()
-            if (now - previous < PROBE_STATUS_INTERVAL_MS) return
-            if (lastProbeStatusAt.compareAndSet(previous, now)) break
-        }
-        status("YouTube MusicのDIAL検索を検出")
+        // Cast-sheet discovery is normal background traffic. Keep it in logcat without showing a
+        // user-visible toast every time YouTube Music sends an M-SEARCH probe.
+        Log.d(TAG, "YouTube Music DIAL probe detected")
     }
 
     private fun acquireMulticastLock() {
@@ -157,6 +149,5 @@ class DialYouTubeReceiver(context: Context) {
 
     companion object {
         private const val TAG = "DialYouTubeReceiver"
-        private const val PROBE_STATUS_INTERVAL_MS = 5_000L
     }
 }
