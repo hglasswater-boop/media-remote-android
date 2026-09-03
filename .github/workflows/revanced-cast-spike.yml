@@ -34,9 +34,9 @@ jobs:
       - name: Apply CastContext spike
         run: |
           cd upstream
-          git apply --check ../tools/revanced-cast-spike/anddea-cast-context.patch
-          git apply ../tools/revanced-cast-spike/anddea-cast-context.patch
+          python3 ../tools/revanced-cast-spike/apply_cast_context_patch.py
           git diff --check
+          git diff -- patches/src/main/kotlin/app/morphe/patches/shared/gms/GmsCoreSupportPatch.kt
 
       - name: Build Android patch bundle
         env:
