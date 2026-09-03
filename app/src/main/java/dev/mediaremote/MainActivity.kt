@@ -7,10 +7,18 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import dev.mediaremote.network.PairingLinks
 import dev.mediaremote.ui.YouTubeMusicRemoteApp
+import dev.mediaremote.update.ManualUpdateCheckButton
 import dev.mediaremote.update.StartupUpdateCheck
 
 class MainActivity : ComponentActivity() {
@@ -27,13 +35,21 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                YouTubeMusicRemoteApp(
-                    sharedText = sharedTextState.value,
-                    pairingLink = pairingLinkState.value,
-                    onSharedTextConsumed = { sharedTextState.value = null },
-                    onPairingLinkConsumed = { pairingLinkState.value = null },
-                )
-                StartupUpdateCheck()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    YouTubeMusicRemoteApp(
+                        sharedText = sharedTextState.value,
+                        pairingLink = pairingLinkState.value,
+                        onSharedTextConsumed = { sharedTextState.value = null },
+                        onPairingLinkConsumed = { pairingLinkState.value = null },
+                    )
+                    ManualUpdateCheckButton(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(top = 4.dp, end = 8.dp),
+                    )
+                    StartupUpdateCheck()
+                }
             }
         }
     }
