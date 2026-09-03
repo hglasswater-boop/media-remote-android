@@ -81,16 +81,16 @@ object MediaSessionBridge {
                 when (command) {
                     RemoteMediaCommand.Play -> controls.play().let { true }
                     RemoteMediaCommand.Pause -> controls.pause().let { true }
+                    RemoteMediaCommand.Stop -> controls.stop().let { true }
                     RemoteMediaCommand.Next -> controls.skipToNext().let { true }
                     RemoteMediaCommand.Previous -> controls.skipToPrevious().let { true }
                     is RemoteMediaCommand.SeekBy -> {
                         val current = activeController.playbackState?.position ?: 0L
-                        val duration = activeController.metadata
-                            ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
-                            ?.takeIf { it > 0L }
-                            ?: Long.MAX_VALUE
-                        val target = (current + command.deltaMs).coerceIn(0L, duration)
-                        controls.seekTo(target)
+                        controls.seekTo(clampSeekTarget(activeController, current + command.deltaMs))
+                        true
+                    }
+                    is RemoteMediaCommand.SeekTo -> {
+                        controls.seekTo(clampSeekTarget(activeController, command.positionMs))
                         true
                     }
                     is RemoteMediaCommand.PlayFromSearch,
@@ -98,6 +98,14 @@ object MediaSessionBridge {
                 }
             }
         }
+    }
+
+    private fun clampSeekTarget(controller: MediaController, targetMs: Long): Long {
+        val duration = controller.metadata
+            ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
+            ?.takeIf { it > 0L }
+            ?: Long.MAX_VALUE
+        return targetMs.coerceIn(0L, duration)
     }
 
     private fun playFromSearch(
@@ -214,9 +222,11 @@ object MediaSessionBridge {
 sealed interface RemoteMediaCommand {
     data object Play : RemoteMediaCommand
     data object Pause : RemoteMediaCommand
+    data object Stop : RemoteMediaCommand
     data object Next : RemoteMediaCommand
     data object Previous : RemoteMediaCommand
     data class SeekBy(val deltaMs: Long) : RemoteMediaCommand
+    data class SeekTo(val positionMs: Long) : RemoteMediaCommand
     data class PlayFromSearch(val query: String) : RemoteMediaCommand
     data class PlayFromUrl(val url: String) : RemoteMediaCommand
 }
