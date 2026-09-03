@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
@@ -22,6 +25,7 @@ class CastDiscoveryExperiment(context: Context) {
     private val appContext = context.applicationContext
     private val running = AtomicBoolean(false)
     private val probeClients = Executors.newCachedThreadPool()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var probeSocket: ServerSocket? = null
     private var probeThread: Thread? = null
@@ -63,6 +67,13 @@ class CastDiscoveryExperiment(context: Context) {
         while (running.get()) {
             val socket = runCatching { server.accept() }.getOrNull() ?: break
             CastExperimentStore.recordProbe(appContext)
+            mainHandler.post {
+                Toast.makeText(
+                    appContext,
+                    "Cast接続試行を検出 • TLS認証の手前まで到達",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
             probeClients.execute { holdProbe(socket) }
         }
     }
