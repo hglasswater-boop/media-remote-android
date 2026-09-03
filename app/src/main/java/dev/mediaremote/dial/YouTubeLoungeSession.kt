@@ -114,20 +114,30 @@ internal class YouTubeLoungeSession(
 
     private fun establish() {
         sessionReady = false
-        var sid = DialIdentityStore.screenId(appContext)
-        if (sid.isNullOrBlank()) {
-            sid = generateScreenId()
-            DialIdentityStore.saveScreenId(appContext, sid)
+
+        val storedSid = DialIdentityStore.screenId(appContext)
+            ?.takeIf { it.isNotBlank() }
+        val initialSid = storedSid ?: generateScreenId().also {
+            DialIdentityStore.saveScreenId(appContext, it)
         }
 
-        val token = runCatching { getLoungeToken(sid) }.getOrElse {
-            // A stored screen id can expire server-side. Refresh it once before bubbling the error.
+        val activeSid: String
+        val token: String
+        try {
+            activeSid = initialSid
+            token = getLoungeToken(initialSid)
+        } catch (error: Exception) {
+            if (storedSid == null) throw error
+
+            // A stored screen id can expire server-side. Generate one fresh id and retry once.
             DialIdentityStore.clearScreenId(appContext)
-            sid = generateScreenId()
-            DialIdentityStore.saveScreenId(appContext, sid)
-            getLoungeToken(sid)
+            val freshSid = generateScreenId()
+            DialIdentityStore.saveScreenId(appContext, freshSid)
+            activeSid = freshSid
+            token = getLoungeToken(freshSid)
         }
-        screenId = sid
+
+        screenId = activeSid
         bindParams.loungeIdToken = token
 
         val initUrl = "$URL_BIND?${bindParams.initSessionQuery()}"
@@ -141,7 +151,7 @@ internal class YouTubeLoungeSession(
 
         sessionReady = true
         onStatus("YouTube Music Cast待受中")
-        Log.i(TAG, "Lounge session ready for theme=m screenId=$sid")
+        Log.i(TAG, "Lounge session ready for theme=m screenId=$activeSid")
     }
 
     private fun generateScreenId(): String {
