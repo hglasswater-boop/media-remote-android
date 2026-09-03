@@ -35,8 +35,9 @@ internal class DialSsdpAdvertiser(
                 bind(InetSocketAddress(SSDP_PORT))
                 soTimeout = 1_500
                 selectWifiInterface()?.let { networkInterface ->
-                    runCatching { joinGroup(InetSocketAddress(multicastAddress, SSDP_PORT), networkInterface) }
-                        .onFailure { Log.w(TAG, "joinGroup with explicit interface failed", it) }
+                    runCatching {
+                        joinGroup(InetSocketAddress(multicastAddress, SSDP_PORT), networkInterface)
+                    }.onFailure { Log.w(TAG, "joinGroup with explicit interface failed", it) }
                 } ?: runCatching { joinGroup(multicastAddress) }
             }
         }.getOrElse {
@@ -88,29 +89,51 @@ internal class DialSsdpAdvertiser(
             }
 
             val request = String(packet.data, packet.offset, packet.length, Charsets.US_ASCII)
-            if (!isDialSearch(request)) continue
+            val searchTarget = dialSearchTarget(request) ?: continue
             onProbe()
-            sendSearchResponse(multicastSocket, packet.address, packet.port)
+            if (searchTarget.equals("ssdp:all", ignoreCase = true)) {
+                // A generic search should expose both DIAL identities. YouTube clients have used
+                // both device:dial:1 and service:dial:1 across versions.
+                sendSearchResponse(multicastSocket, packet.address, packet.port, DIAL_DEVICE)
+                sendSearchResponse(multicastSocket, packet.address, packet.port, DIAL_SERVICE)
+            } else {
+                sendSearchResponse(multicastSocket, packet.address, packet.port, searchTarget)
+            }
         }
     }
 
-    private fun isDialSearch(request: String): Boolean {
-        val upper = request.uppercase()
-        if (!upper.startsWith("M-SEARCH * HTTP/1.1")) return false
-        return upper.contains("ST: $DIAL_SERVICE".uppercase()) ||
-            upper.contains("ST: SSDP:ALL")
+    private fun dialSearchTarget(request: String): String? {
+        val lines = request.replace("\r", "").split('\n')
+        if (lines.firstOrNull()?.trim()?.uppercase() != "M-SEARCH * HTTP/1.1") return null
+        val st = lines.firstNotNullOfOrNull { line ->
+            val separator = line.indexOf(':')
+            if (separator <= 0) return@firstNotNullOfOrNull null
+            val key = line.substring(0, separator).trim()
+            if (!key.equals("ST", ignoreCase = true)) return@firstNotNullOfOrNull null
+            line.substring(separator + 1).trim()
+        } ?: return null
+        return when {
+            st.equals(DIAL_SERVICE, ignoreCase = true) -> DIAL_SERVICE
+            st.equals(DIAL_DEVICE, ignoreCase = true) -> DIAL_DEVICE
+            st.equals("ssdp:all", ignoreCase = true) -> "ssdp:all"
+            else -> null
+        }
     }
 
-    private fun sendSearchResponse(socket: MulticastSocket, address: InetAddress, port: Int) {
+    private fun sendSearchResponse(
+        socket: MulticastSocket,
+        address: InetAddress,
+        port: Int,
+        searchTarget: String,
+    ) {
         val payload = buildString {
             append("HTTP/1.1 200 OK\r\n")
             append("CACHE-CONTROL: max-age=1800\r\n")
-            append("DATE: \r\n")
             append("EXT:\r\n")
             append("LOCATION: ${descriptionUrl()}\r\n")
             append("SERVER: Android/${Build.VERSION.RELEASE} UPnP/1.1 YTMusicRemote/${BuildConfig.VERSION_NAME}\r\n")
-            append("ST: $DIAL_SERVICE\r\n")
-            append("USN: ${usn()}\r\n")
+            append("ST: $searchTarget\r\n")
+            append("USN: ${usn(searchTarget)}\r\n")
             append("BOOTID.UPNP.ORG: 1\r\n")
             append("CONFIGID.UPNP.ORG: 1\r\n")
             append("\r\n")
@@ -143,7 +166,7 @@ internal class DialSsdpAdvertiser(
         append("HOST: $MULTICAST_ADDRESS:$SSDP_PORT\r\n")
         append("NT: $DIAL_SERVICE\r\n")
         append("NTS: $nts\r\n")
-        append("USN: ${usn()}\r\n")
+        append("USN: ${usn(DIAL_SERVICE)}\r\n")
         if (nts == "ssdp:alive") {
             append("LOCATION: ${descriptionUrl()}\r\n")
             append("CACHE-CONTROL: max-age=1800\r\n")
@@ -156,7 +179,7 @@ internal class DialSsdpAdvertiser(
 
     private fun descriptionUrl(): String = "http://${hostAddress()}:$httpPort/dd.xml"
 
-    private fun usn(): String = "uuid:$identityUuid::$DIAL_SERVICE"
+    private fun usn(searchTarget: String): String = "uuid:$identityUuid::$searchTarget"
 
     private fun selectWifiInterface(): NetworkInterface? {
         val targetAddress = hostAddress()
@@ -171,5 +194,6 @@ internal class DialSsdpAdvertiser(
         private const val MULTICAST_ADDRESS = "239.255.255.250"
         private const val SSDP_PORT = 1900
         private const val DIAL_SERVICE = "urn:dial-multiscreen-org:service:dial:1"
+        private const val DIAL_DEVICE = "urn:dial-multiscreen-org:device:dial:1"
     }
 }
