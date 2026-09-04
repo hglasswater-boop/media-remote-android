@@ -258,7 +258,11 @@ internal object YouTubeMusicTrackResolver {
             val candidateText = normalize(candidate.searchableText)
 
             var score = when {
-                candidateTitle == wantedTitle -> 120
+                // The notification can expose the title before artist/duration. An exact title
+                // is still the strongest identity signal in that transient state; keep variants
+                // below the acceptance threshold so a "Live"/cover result cannot win merely
+                // because it happens to contain the artist text.
+                candidateTitle == wantedTitle -> 160
                 candidateTitle.contains(wantedTitle) || wantedTitle.contains(candidateTitle) -> 75
                 else -> 0
             }

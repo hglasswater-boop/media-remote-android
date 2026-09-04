@@ -347,30 +347,59 @@ object MediaSessionBridge {
         val link = YouTubeMusicLink.extract(rawUrl) ?: return false
         val playbackUri = link.playbackUri
         val playlistId = playbackUri.getQueryParameter("list")?.takeIf { it.isNotBlank() }
+        val isLoungeQueue = playlistId?.startsWith("RQ", ignoreCase = true) == true
+        val nativePlaylistUri = if (isLoungeQueue) {
+            playbackUri.buildUpon()
+                .scheme("vnd.youtube.music")
+                .build()
+        } else {
+            null
+        }
 
         // Lounge delivers this command while MediaRemote is normally in the background. Android can
         // reject a background startActivity, so always try the MediaSession transport command first.
         // The URI still carries list/index/ctt/params; YouTube Music builds the queue when it honors
         // that context, and the deep-link remains a foreground fallback for builds that do not.
+        if (controller != null && nativePlaylistUri != null &&
+            trySessionUriPlayback(controller, nativePlaylistUri)
+        ) {
+            Log.i(
+                TAG,
+                "PlayFromUrl handled by MediaSession videoId=${playbackUri.getQueryParameter("v")} " +
+                    "listId=${playlistId ?: "<none>"} scheme=${nativePlaylistUri.scheme}",
+            )
+            return true
+        }
         if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
             Log.i(
                 TAG,
                 "PlayFromUrl handled by MediaSession videoId=${playbackUri.getQueryParameter("v")} " +
-                    "listId=${playlistId ?: "<none>"}",
+                    "listId=${playlistId ?: "<none>"} scheme=${playbackUri.scheme}",
             )
             return true
         }
 
+        val deepLinkUri = nativePlaylistUri ?: playbackUri
         val launched = launchYouTubeMusic(
             context,
-            Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
+            Intent(Intent.ACTION_VIEW, deepLinkUri).apply { setPackage(TARGET_PACKAGE) },
         )
+        val fallbackLaunched = if (!launched && nativePlaylistUri != null) {
+            launchYouTubeMusic(
+                context,
+                Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
+            )
+        } else {
+            false
+        }
+        val anyLaunched = launched || fallbackLaunched
         Log.i(
             TAG,
-            "PlayFromUrl deep-link fallback launched=$launched " +
-                "videoId=${playbackUri.getQueryParameter("v")} listId=${playlistId ?: "<none>"}",
+            "PlayFromUrl deep-link fallback launched=$anyLaunched " +
+                "videoId=${playbackUri.getQueryParameter("v")} listId=${playlistId ?: "<none>"} " +
+                "scheme=${if (launched) deepLinkUri.scheme else playbackUri.scheme}",
         )
-        return launched
+        return anyLaunched
     }
 
     private fun trySessionUriPlayback(controller: MediaController, uri: Uri): Boolean {
