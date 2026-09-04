@@ -5,10 +5,9 @@ import android.content.Context
 /**
  * Persists the last YouTube video identity that MediaRemote could prove.
  *
- * YouTube Music exposes title / artist / duration reliably through MediaSession, but the 11-character
- * YouTube video id is not guaranteed to be present after the remote receiver process is restarted.
- * Keeping a signature-bound identity lets a later snapshot restore that id without ever attaching a
- * stale id to a different song.
+ * YouTube Music exposes title / artist / duration more reliably than the 11-character video id.
+ * Keeping the id bound to that signature lets a later snapshot restore it and, just as importantly,
+ * lets us reject an old MediaSession id that survives into the next track.
  */
 internal object YouTubeMediaIdentityStore {
     private const val PREFS = "youtube_media_identity"
@@ -47,6 +46,34 @@ internal object YouTubeMediaIdentityStore {
             .remove(KEY_PENDING_VIDEO_ID)
             .remove(KEY_PENDING_AT_MS)
             .apply()
+    }
+
+    /**
+     * If YouTube Music keeps publishing exactly the previous video's id while the visible track
+     * title/artist already changed, that id is stale. Reject it before it can be rebound to the new
+     * signature and poison future reconnect restoration.
+     */
+    fun acceptsCandidate(
+        context: Context,
+        videoId: String,
+        title: String,
+        artist: String,
+        durationMs: Long,
+    ): Boolean {
+        if (videoId.isBlank()) return false
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val storedVideoId = prefs.getString(KEY_VIDEO_ID, null) ?: return true
+        if (storedVideoId != videoId) return true
+
+        val storedTitle = prefs.getString(KEY_TITLE, "").orEmpty()
+        val storedArtist = prefs.getString(KEY_ARTIST, "").orEmpty()
+        val storedDuration = prefs.getLong(KEY_DURATION_MS, 0L)
+        if (storedTitle.isBlank() && storedArtist.isBlank()) return true
+
+        val titleMatches = storedTitle == normalize(title)
+        val artistMatches = storedArtist == normalize(artist)
+        val durationMatches = durationMatches(storedDuration, durationMs)
+        return titleMatches && artistMatches && durationMatches
     }
 
     fun resolve(
