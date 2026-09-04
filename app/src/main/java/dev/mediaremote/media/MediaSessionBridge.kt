@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.util.Log
 
 data class MediaSnapshot(
     val available: Boolean,
@@ -347,16 +348,27 @@ object MediaSessionBridge {
         val playbackUri = link.playbackUri
         val playlistId = playbackUri.getQueryParameter("list")?.takeIf { it.isNotBlank() }
 
-        // YouTube Music's MediaSession playFromUri path often honors the video id but discards the
-        // playlist/index context. For a Lounge setPlaylist request, the context is the important part:
-        // use the app deep link so YouTube Music actually builds the requested playlist queue.
-        if (playlistId == null && controller != null && trySessionUriPlayback(controller, playbackUri)) {
+        // Lounge delivers this command while MediaRemote is normally in the background. Android can
+        // reject a background startActivity, so always try the MediaSession transport command first.
+        // The URI still carries list/index/ctt/params; YouTube Music builds the queue when it honors
+        // that context, and the deep-link remains a foreground fallback for builds that do not.
+        if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
+            Log.i(
+                TAG,
+                "PlayFromUrl handled by MediaSession videoId=${playbackUri.getQueryParameter("v")} " +
+                    "listId=${playlistId ?: "<none>"}",
+            )
             return true
         }
 
         val launched = launchYouTubeMusic(
             context,
             Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
+        )
+        Log.i(
+            TAG,
+            "PlayFromUrl deep-link fallback launched=$launched " +
+                "videoId=${playbackUri.getQueryParameter("v")} listId=${playlistId ?: "<none>"}",
         )
         return launched
     }
@@ -410,6 +422,7 @@ object MediaSessionBridge {
         true
     }.getOrDefault(false)
 
+    private const val TAG = "MediaSessionBridge"
     private const val MAX_BUNDLE_DEPTH = 3
     private val MEDIA_TEXT_NOISE = Regex("[^\\p{L}\\p{N}]+")
     private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
