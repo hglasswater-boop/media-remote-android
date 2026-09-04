@@ -86,9 +86,6 @@ object MediaSessionBridge {
         val playbackState = controller.playbackState
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
 
-        // The media notification is the user-visible source of truth. YouTube Music can leave an old
-        // MediaSession active whose PlaybackState keeps moving even though its metadata is frozen on
-        // the previous track. Prefer the notification title/artist when we have its exact session token.
         val title = source.notification?.title?.takeIf { it.isNotBlank() }
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
         val artist = source.notification?.artist?.takeIf { it.isNotBlank() }
@@ -103,17 +100,24 @@ object MediaSessionBridge {
                 queueItemMatches(item.description, title, artist)
             }
         }
-        if (activeQueueIndex < 0 && queue.size == 1) {
-            activeQueueIndex = 0
-        }
+        if (activeQueueIndex < 0 && queue.size == 1) activeQueueIndex = 0
         val activeDescription = queue.getOrNull(activeQueueIndex)?.description
 
-        val resolvedMediaId = resolveYouTubeVideoId(
+        val candidateMediaId = resolveYouTubeVideoId(
             metadata = metadata,
             activeDescription = activeDescription,
             controllerExtras = controller.extras,
             playbackState = playbackState,
         )
+        val resolvedMediaId = candidateMediaId.takeIf {
+            it.isNotBlank() && YouTubeMediaIdentityStore.acceptsCandidate(
+                context = context,
+                videoId = it,
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+            )
+        }.orEmpty()
         val mediaId = resolvedMediaId.ifBlank {
             YouTubeMediaIdentityStore.resolve(
                 context = context,
@@ -247,7 +251,6 @@ object MediaSessionBridge {
 
     private fun currentPositionMs(state: PlaybackState?, durationMs: Long): Long {
         if (state == null) return 0L
-
         var position = state.position.coerceAtLeast(0L)
         if (
             state.state == PlaybackState.STATE_PLAYING &&
@@ -257,7 +260,6 @@ object MediaSessionBridge {
             val elapsed = (SystemClock.elapsedRealtime() - state.lastPositionUpdateTime).coerceAtLeast(0L)
             position += (elapsed * state.playbackSpeed).toLong()
         }
-
         return if (durationMs > 0L) position.coerceIn(0L, durationMs) else position.coerceAtLeast(0L)
     }
 
@@ -305,14 +307,12 @@ object MediaSessionBridge {
     private fun playFromSearch(context: Context, controller: MediaController?, query: String): Boolean {
         val clean = query.trim()
         if (clean.isBlank()) return false
-
         val actions = controller?.playbackState?.actions ?: 0L
         if (controller != null && actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L) {
             val before = sessionSignature(controller)
             controller.transportControls.playFromSearch(clean, null)
             if (awaitSessionChange(controller, before)) return true
         }
-
         return launchYouTubeMusic(
             context,
             Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
@@ -349,7 +349,6 @@ object MediaSessionBridge {
             runCatching { controls.playFromUri(uri, null) }
             if (awaitSessionChange(controller, before)) return true
         }
-
         if (actions and PlaybackState.ACTION_PREPARE_FROM_URI != 0L) {
             runCatching {
                 controls.prepareFromUri(uri, null)
@@ -358,7 +357,6 @@ object MediaSessionBridge {
             }
             if (awaitSessionChange(controller, before)) return true
         }
-
         return false
     }
 
