@@ -611,6 +611,18 @@ internal class YouTubeLoungeSession(
     }
 
     private fun trackIdentityChanged(previous: MediaSnapshot, current: MediaSnapshot): Boolean {
+        // A selected queue can contain the same title/artist as the track that was already playing.
+        // YTM still replaces queue item ids when playFromMediaId installs the requested queue.
+        // Treat a changed two-item window as a track/queue transition so the sender's requested
+        // videoId wins over a stale catalog cache for that ambiguous title.
+        val comparableQueueItems = minOf(previous.queueWindow.size, current.queueWindow.size, 3)
+        if (comparableQueueItems >= 2 && (0 until comparableQueueItems).any { index ->
+                previous.queueWindow[index].queueId > 0L &&
+                    current.queueWindow[index].queueId > 0L &&
+                    previous.queueWindow[index].queueId != current.queueWindow[index].queueId
+            }
+        ) return true
+
         if (
             previous.queueSize > 1 &&
             previous.queueSize == current.queueSize &&

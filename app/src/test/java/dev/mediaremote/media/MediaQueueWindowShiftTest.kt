@@ -32,4 +32,18 @@ class MediaQueueWindowShiftTest {
         assertNull(MediaQueueWindowShift.forwardShift(listOf(item(1), item(2), item(3)), listOf(item(9), item(2), item(3))))
         assertNull(MediaQueueWindowShift.forwardShift(listOf(item(1), item(2), item(3)), listOf(item(-2), item(3), item(4))))
     }
+
+    @Test fun doesNotMistakeRebuiltSameTitleQueueForAForwardShift() {
+        val before = listOf(
+            MediaQueueWindowItem(100, "Questions", "Maeta"),
+            MediaQueueWindowItem(101, "On Your Side", "Milo"),
+            item(102),
+        )
+        val after = listOf(
+            MediaQueueWindowItem(200, "Questions", "Maeta"),
+            MediaQueueWindowItem(201, "On Your Side", "Milo"),
+            item(202),
+        )
+        assertNull(MediaQueueWindowShift.forwardShift(before, after))
+    }
 }

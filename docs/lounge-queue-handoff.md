@@ -79,6 +79,15 @@ target is within the four-second pending-selection guard, retain the first
 baseline and command; update the received context but do not dispatch or seek
 again. A later intentional same-song selection is not suppressed after the guard.
 
+## Follow-up: same-title queue replacement (0.6.21)
+
+`Questions` demonstrated that a sender can select a different video/queue while
+the receiver is already displaying the same title and artist. A title transition
+alone cannot confirm it. The MediaSession queue item IDs changed for the first
+two visible entries when YTM installed the requested queue; treat that as a
+transition for the pending sender target. This lets the received target ID win
+over a stale title-based catalog cache. It is not a title-only heuristic.
+
 ## Validation procedure
 
 Build/test/lint. Update with the same signing certificate (do not clear app data).
