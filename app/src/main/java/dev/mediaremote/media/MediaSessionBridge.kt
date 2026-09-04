@@ -88,22 +88,38 @@ object MediaSessionBridge {
         val playbackState = controller.playbackState
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
 
-        val title = source.notification?.title?.takeIf { it.isNotBlank() }
+        val fallbackTitle = source.notification?.title?.takeIf { it.isNotBlank() }
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
-        val artist = source.notification?.artist?.takeIf { it.isNotBlank() }
+        val fallbackArtist = source.notification?.artist?.takeIf { it.isNotBlank() }
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
 
         val queue = controller.queue.orEmpty()
         val activeQueueId = playbackState?.activeQueueItemId ?: -1L
-        var activeQueueIndex = queue.indexOfFirst { it.queueId == activeQueueId }
+        val stateQueueIndex = queue.indexOfFirst { it.queueId == activeQueueId }
+        var activeQueueIndex = stateQueueIndex
 
-        if (activeQueueIndex < 0 && title.isNotBlank()) {
+        if (activeQueueIndex < 0 && fallbackTitle.isNotBlank()) {
             activeQueueIndex = queue.indexOfFirst { item ->
-                queueItemMatches(item.description, title, artist)
+                queueItemMatches(item.description, fallbackTitle, fallbackArtist)
             }
         }
         if (activeQueueIndex < 0 && queue.size == 1) activeQueueIndex = 0
         val activeDescription = queue.getOrNull(activeQueueIndex)?.description
+
+        // PlaybackState.activeQueueItemId points at the actual queue item even on YouTube Music
+        // builds where the top-level MediaMetadata remains frozen on the previous song. Prefer the
+        // active queue description in that case, both for visible metadata and video identity.
+        val queueIdentityIsAuthoritative = stateQueueIndex >= 0
+        val title = if (queueIdentityIsAuthoritative) {
+            activeDescription?.title?.toString()?.takeIf { it.isNotBlank() } ?: fallbackTitle
+        } else {
+            fallbackTitle
+        }
+        val artist = if (queueIdentityIsAuthoritative) {
+            activeDescription?.subtitle?.toString()?.takeIf { it.isNotBlank() } ?: fallbackArtist
+        } else {
+            fallbackArtist
+        }
 
         val candidateMediaId = resolveYouTubeVideoId(
             metadata = metadata,
@@ -185,18 +201,21 @@ object MediaSessionBridge {
             value?.trim()?.takeIf { it.isNotBlank() }?.let(candidates::add)
         }
 
+        // activeDescription belongs to PlaybackState.activeQueueItemId, so it outranks top-level
+        // metadata that YouTube Music is known to leave stale while playback continues.
+        add(activeDescription?.mediaId)
+        add(activeDescription?.mediaUri?.toString())
+        addBundleValues(activeDescription?.extras, candidates)
+
         add(metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID))
         add(metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI))
         add(metadata?.description?.mediaId)
         add(metadata?.description?.mediaUri?.toString())
-        add(activeDescription?.mediaId)
-        add(activeDescription?.mediaUri?.toString())
 
         metadata?.keySet()?.forEach { key ->
             add(runCatching { metadata.getString(key) }.getOrNull())
         }
 
-        addBundleValues(activeDescription?.extras, candidates)
         addBundleValues(controllerExtras, candidates)
         addBundleValues(playbackState?.extras, candidates)
         playbackState?.customActions.orEmpty().forEach { action ->
