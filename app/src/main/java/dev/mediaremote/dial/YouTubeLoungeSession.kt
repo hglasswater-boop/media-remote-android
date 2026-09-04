@@ -27,6 +27,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
+/** A duplicate setPlaylist is an acknowledgement of the pending selection, not a reset. */
+internal fun shouldResetSenderSelection(
+    isSetPlaylist: Boolean,
+    duplicatePendingSelection: Boolean,
+): Boolean = isSetPlaylist && !duplicatePendingSelection
+
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
  *
@@ -395,7 +401,7 @@ internal class YouTubeLoungeSession(
             senderExpectedVideoId = videoId
             senderSelectionDeadlineMs =
                 SystemClock.elapsedRealtime() + SENDER_SELECTION_GUARD_MS
-        } else if (isSetPlaylist) {
+        } else if (shouldResetSenderSelection(isSetPlaylist, duplicatePendingSelection)) {
             clearCurrentVideoIdentity(clearIndex = false)
             senderExpectedVideoId = null
             senderSelectionDeadlineMs = 0L

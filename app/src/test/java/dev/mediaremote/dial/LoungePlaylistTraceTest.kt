@@ -6,6 +6,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LoungePlaylistTraceTest {
+    @Test fun duplicatePendingSetPlaylistKeepsSenderSelectionGuard() {
+        assertFalse(shouldResetSenderSelection(isSetPlaylist = true, duplicatePendingSelection = true))
+        assertTrue(shouldResetSenderSelection(isSetPlaylist = true, duplicatePendingSelection = false))
+        assertFalse(shouldResetSenderSelection(isSetPlaylist = false, duplicatePendingSelection = false))
+    }
+
     @Test fun preservesRawContextAndOmitsUnrelatedValues() {
         val input = JSONObject()
             .put("videoId", "8yW3K--5000")
