@@ -29,11 +29,17 @@ data class YouTubeMusicLink(
             }
             val playlistId = uri.getQueryParameter("list")?.takeIf { it.isNotBlank() } ?: return uri
             if (uri.path == "/watch") return uri
+            val playlistIndex = uri.getQueryParameter("index")
+                ?.toIntOrNull()
+                ?.takeIf { it >= 0 }
             return Uri.Builder()
                 .scheme("https")
                 .authority("music.youtube.com")
                 .path("/watch")
                 .appendQueryParameter("list", playlistId)
+                .apply {
+                    playlistIndex?.let { appendQueryParameter("index", it.toString()) }
+                }
                 .build()
         }
 
@@ -62,6 +68,9 @@ data class YouTubeMusicLink(
             }
             val videoId = shortVideoId ?: source.getQueryParameter("v")
             val playlistId = source.getQueryParameter("list")
+            val playlistIndex = source.getQueryParameter("index")
+                ?.toIntOrNull()
+                ?.takeIf { it >= 0 }
 
             val canonical = when {
                 !videoId.isNullOrBlank() -> Uri.Builder()
@@ -72,6 +81,7 @@ data class YouTubeMusicLink(
                     .apply {
                         if (!playlistId.isNullOrBlank()) {
                             appendQueryParameter("list", playlistId)
+                            playlistIndex?.let { appendQueryParameter("index", it.toString()) }
                         }
                     }
                     .build()
@@ -81,6 +91,9 @@ data class YouTubeMusicLink(
                     .authority("music.youtube.com")
                     .path("/playlist")
                     .appendQueryParameter("list", playlistId)
+                    .apply {
+                        playlistIndex?.let { appendQueryParameter("index", it.toString()) }
+                    }
                     .build()
 
                 host == "music.youtube.com" -> source
