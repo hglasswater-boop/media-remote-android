@@ -39,6 +39,7 @@ data class YouTubeMusicLink(
                 .appendQueryParameter("list", playlistId)
                 .apply {
                     playlistIndex?.let { appendQueryParameter("index", it.toString()) }
+                    appendContextParameters(uri)
                 }
                 .build()
         }
@@ -83,6 +84,7 @@ data class YouTubeMusicLink(
                             appendQueryParameter("list", playlistId)
                             playlistIndex?.let { appendQueryParameter("index", it.toString()) }
                         }
+                        appendContextParameters(source)
                     }
                     .build()
 
@@ -93,6 +95,7 @@ data class YouTubeMusicLink(
                     .appendQueryParameter("list", playlistId)
                     .apply {
                         playlistIndex?.let { appendQueryParameter("index", it.toString()) }
+                        appendContextParameters(source)
                     }
                     .build()
 
@@ -113,6 +116,15 @@ data class YouTubeMusicLink(
             }
 
             return YouTubeMusicLink(canonical, type)
+        }
+
+        private fun Uri.Builder.appendContextParameters(source: Uri) {
+            source.getQueryParameter("ctt")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { appendQueryParameter("ctt", it) }
+            source.getQueryParameter("params")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { appendQueryParameter("params", it) }
         }
     }
 }

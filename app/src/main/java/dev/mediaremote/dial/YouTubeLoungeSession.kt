@@ -71,6 +71,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentParams: String? = null
     @Volatile private var senderExpectedVideoId: String? = null
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
+    @Volatile private var currentVideoConfirmed = false
     @Volatile private var currentCpn: String = newCpn()
     private var lastMediaSnapshot: MediaSnapshot? = null
 
@@ -314,10 +315,16 @@ internal class YouTubeLoungeSession(
     }
 
     private fun handlePlaylistMessage(message: LoungeMessage, payload: JSONObject?) {
+        val isSetPlaylist = message.name == "setPlaylist"
+        val hasListId = payload?.has("listId") == true
+        val hasVideoIds = payload?.has("videoIds") == true
+        val hasIndex = payload?.has("currentIndex") == true
+        val hasCtt = payload?.has("ctt") == true
+        val hasParams = payload?.has("params") == true
         val videoId = payload?.optString("videoId")?.takeIf(YOUTUBE_VIDEO_ID::matches)
         val listId = payload?.optString("listId")?.takeIf { it.isNotBlank() }
         val videoIds = parsePlaylistVideoIds(payload)
-        val index = payload?.takeIf { it.has("currentIndex") }
+        val index = payload?.takeIf { hasIndex }
             ?.optInt("currentIndex")
             ?.takeIf { it >= 0 }
         val ctt = payload?.optString("ctt")?.takeIf { it.isNotBlank() }
@@ -325,31 +332,61 @@ internal class YouTubeLoungeSession(
         val currentTimeSeconds = payload?.optString("currentTime")?.toDoubleOrNull()
             ?: payload?.optDouble("currentTime", Double.NaN)?.takeUnless { it.isNaN() }
 
-        val oldListId = currentListId
-        if (listId == null) {
-            clearPlaylistContext()
-        } else {
-            currentListId = listId
-            currentVideoIds = videoIds
-            currentIndex = index ?: videoId?.let { id ->
-                videoIds.indexOf(id).takeIf { it >= 0 }
-            }
-            currentParams = params
-            if (message.name == "setPlaylist" || oldListId != listId) {
+        if (isSetPlaylist) {
+            if (listId == null) {
+                clearPlaylistContext()
+            } else {
+                currentListId = listId
+                currentVideoIds = videoIds
+                currentIndex = index ?: videoId?.let { id ->
+                    videoIds.indexOf(id).takeIf { it >= 0 }
+                }
                 currentCtt = ctt
+                currentParams = params
             }
+        } else {
+            // updatePlaylist is a partial update in the Lounge protocol. In particular, YouTube
+            // Music frequently sends index=-1 and omits ctt/params while it rebuilds its queue.
+            // Do not erase the last known context just because that transient snapshot is sparse.
+            if (hasListId) {
+                if (listId == null) {
+                    clearPlaylistContext()
+                } else if (currentListId != listId) {
+                    currentListId = listId
+                    currentVideoIds = emptyList()
+                    currentIndex = null
+                    currentCtt = null
+                    currentParams = null
+                }
+            }
+            if (hasVideoIds) {
+                currentVideoIds = videoIds
+            }
+            if (index != null) {
+                currentIndex = index
+            }
+            if (videoId != null) {
+                setCurrentVideo(videoId)
+                currentIndex = index ?: currentVideoIds.indexOf(videoId).takeIf { it >= 0 } ?: currentIndex
+            } else if (hasVideoIds && index == null) {
+                currentVideoId?.let { id ->
+                    currentVideoIds.indexOf(id).takeIf { it >= 0 }?.let { currentIndex = it }
+                }
+            }
+            if (hasCtt) currentCtt = ctt
+            if (hasParams) currentParams = params
         }
 
-        if (videoId != null) {
+        if (videoId != null && isSetPlaylist) {
             setCurrentVideo(videoId)
-            senderExpectedVideoId = if (message.name == "setPlaylist") videoId else null
-            senderSelectionDeadlineMs = if (message.name == "setPlaylist") {
+            currentVideoConfirmed = false
+            senderExpectedVideoId = videoId
+            senderSelectionDeadlineMs =
                 SystemClock.elapsedRealtime() + SENDER_SELECTION_GUARD_MS
-            } else {
-                0L
-            }
-        } else if (message.name == "setPlaylist") {
+        } else if (isSetPlaylist) {
             clearCurrentVideoIdentity(clearIndex = false)
+            senderExpectedVideoId = null
+            senderSelectionDeadlineMs = 0L
         }
 
         Log.i(
@@ -358,8 +395,8 @@ internal class YouTubeLoungeSession(
                 "index=${currentIndex ?: -1} videoIds=${videoIds.size} ctt=${ctt != null} params=${params != null}",
         )
 
-        if (message.name == "setPlaylist" && videoId != null) {
-            val url = buildMusicUrl(videoId, listId, currentIndex)
+        if (isSetPlaylist && videoId != null) {
+            val url = buildMusicUrl(videoId, listId, currentIndex, currentCtt, currentParams)
             MediaSessionBridge.execute(appContext, RemoteMediaCommand.PlayFromUrl(url))
             if (currentTimeSeconds != null && currentTimeSeconds > 1.0) {
                 mediaSyncExecutor.schedule(
@@ -481,7 +518,7 @@ internal class YouTubeLoungeSession(
         syncCurrentVideo(snapshot)
         sendHasPreviousNextChanged(aid, snapshot)
         sendNowPlaying(aid, snapshot)
-        queueStateChange(aid)
+        if (currentVideoConfirmed) queueStateChange(aid)
         lastMediaSnapshot = snapshot
     }
 
@@ -493,8 +530,12 @@ internal class YouTubeLoungeSession(
         val previous = lastMediaSnapshot
         val trackChanged = previous != null && trackIdentityChanged(previous, snapshot)
 
-        syncCurrentVideo(snapshot, invalidateWhenMissing = trackChanged)
-        if (currentVideoId == null && snapshot.title.isNotBlank()) {
+        syncCurrentVideo(
+            snapshot,
+            invalidateWhenMissing = trackChanged,
+            previousSnapshot = previous,
+        )
+        if (!currentVideoConfirmed && snapshot.title.isNotBlank()) {
             scheduleIdentityResolution(snapshot)
         }
 
@@ -519,8 +560,13 @@ internal class YouTubeLoungeSession(
             )
         }
 
-        if (force || stateChanged || positionChanged) queueStateChange(aid)
+        // A track transition must publish its identity before a position-only state update. If
+        // MediaSession has not exposed a usable id yet, hold both messages until the resolver can
+        // identify the new track; otherwise the sender advances the old song's seek bar.
         if (force || mediaChanged || stateChanged) sendNowPlaying(aid, snapshot)
+        if (force || stateChanged || positionChanged) {
+            if (currentVideoConfirmed) queueStateChange(aid)
+        }
         if (force || mediaChanged || actionsChanged) sendHasPreviousNextChanged(aid, snapshot)
 
         lastMediaSnapshot = snapshot
@@ -553,17 +599,29 @@ internal class YouTubeLoungeSession(
     private fun normalizeTrackText(value: String): String = value.trim().lowercase()
 
     private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
-        syncCurrentVideo(snapshot)
-        if (currentVideoId == null && snapshot.title.isNotBlank()) {
+        syncCurrentVideo(snapshot, invalidateWhenMissing = true)
+        if (!currentVideoConfirmed && snapshot.title.isNotBlank()) {
             scheduleIdentityResolution(snapshot)
         }
 
-        val videoId = currentVideoId
+        val videoId = currentVideoId?.takeIf { currentVideoConfirmed }
         if (videoId == null) {
-            // The reference receiver never publishes a half-populated nowPlaying object. Sending
-            // time/state without a videoId makes YouTube Music retain the previous track while only
-            // its seek bar advances, which is exactly the stale-title symptom we need to avoid.
-            sendMessage(aid, "nowPlaying", emptyMap())
+            // Do not send a half-populated nowPlaying object while a non-empty MediaSession is
+            // transitioning. The sender otherwise keeps the previous title/artwork but accepts
+            // the new position. A genuinely empty/stopped session may still be cleared normally.
+            if (!snapshot.available || snapshot.title.isBlank() ||
+                snapshot.playbackState == PlaybackState.STATE_NONE ||
+                snapshot.playbackState == PlaybackState.STATE_STOPPED
+            ) {
+                sendMessage(aid, "nowPlaying", emptyMap())
+            } else {
+                Log.i(
+                    TAG,
+                    "nowPlaying deferred: title=${snapshot.title.take(80)} " +
+                        "mediaId=${snapshot.mediaId.ifBlank { "<unresolved>" }} " +
+                        "queue=${snapshot.queueIndex}/${snapshot.queueSize}",
+                )
+            }
             return
         }
 
@@ -586,25 +644,45 @@ internal class YouTubeLoungeSession(
             currentCtt?.let { payload["ctt"] = it }
             currentParams?.let { payload["params"] = it }
         }
+        val payloadListId = payload["listId"] ?: "<none>"
+        val payloadIndex = payload["currentIndex"] ?: -1
+        Log.i(
+            TAG,
+            "nowPlaying queued: videoId=$videoId listId=$payloadListId " +
+                "index=$payloadIndex title=${snapshot.title.take(80)}",
+        )
         sendMessage(aid, "nowPlaying", payload)
     }
 
-    private fun syncCurrentVideo(snapshot: MediaSnapshot, invalidateWhenMissing: Boolean = false) {
+    private fun syncCurrentVideo(
+        snapshot: MediaSnapshot,
+        invalidateWhenMissing: Boolean = false,
+        previousSnapshot: MediaSnapshot? = lastMediaSnapshot,
+    ) {
         val expected = senderExpectedVideoId
             ?.takeIf { SystemClock.elapsedRealtime() <= senderSelectionDeadlineMs }
         if (senderExpectedVideoId != null && expected == null) {
             senderExpectedVideoId = null
             senderSelectionDeadlineMs = 0L
+            if (!currentVideoConfirmed) clearCurrentVideoIdentity(clearIndex = false)
         }
 
         val playlistResolved = playlistVideoIdFromSnapshot(snapshot)
-        val directResolved = snapshot.mediaId.takeIf(YOUTUBE_VIDEO_ID::matches)
+        val directResolved = snapshot.mediaId
+            .takeIf(YOUTUBE_VIDEO_ID::matches)
+            ?.takeUnless { candidate ->
+                invalidateWhenMissing &&
+                    previousSnapshot != null &&
+                    previousSnapshot.mediaId == candidate &&
+                    trackIdentityChanged(previousSnapshot, snapshot)
+            }
 
         if (expected != null) {
             if (playlistResolved == expected || directResolved == expected) {
                 senderExpectedVideoId = null
                 senderSelectionDeadlineMs = 0L
                 setCurrentVideo(expected)
+                currentVideoConfirmed = true
                 alignPlaylistContextForLocalVideo(expected, snapshot)
             }
             // While YouTube Music is still switching queues, the sender's setPlaylist videoId is
@@ -614,12 +692,14 @@ internal class YouTubeLoungeSession(
 
         if (playlistResolved != null) {
             setCurrentVideo(playlistResolved)
+            currentVideoConfirmed = true
             currentIndex = snapshot.queueIndex
             return
         }
 
         if (directResolved != null) {
             setCurrentVideo(directResolved)
+            currentVideoConfirmed = true
             alignPlaylistContextForLocalVideo(directResolved, snapshot)
         } else if (invalidateWhenMissing && snapshot.title.isNotBlank()) {
             clearCurrentVideoIdentity(clearIndex = false)
@@ -645,9 +725,10 @@ internal class YouTubeLoungeSession(
                 return
             }
 
-            // A proven video outside the sender's queue means local YouTube Music moved to a
-            // different context. Do not keep echoing an unrelated listId/currentIndex pair.
-            clearPlaylistContext()
+            // The sender can rebuild its queue with a partial/different ordering while the local
+            // MediaSession is settling. Keep the list id, but leave the index untouched so a later
+            // update can re-align it; playlistContextMatches() will prevent an unrelated list
+            // position from being echoed in the meantime.
             return
         }
 
@@ -658,9 +739,13 @@ internal class YouTubeLoungeSession(
     private fun playlistContextMatches(videoId: String): Boolean {
         val listId = currentListId ?: return false
         if (listId.isBlank()) return false
-        val index = currentIndex ?: return currentVideoIds.isEmpty()
         val ids = currentVideoIds
-        return ids.isEmpty() || ids.getOrNull(index) == videoId
+        val index = currentIndex
+        return when {
+            ids.isEmpty() -> true
+            index != null -> ids.getOrNull(index) == videoId
+            else -> ids.contains(videoId)
+        }
     }
 
     /**
@@ -670,7 +755,7 @@ internal class YouTubeLoungeSession(
      */
     private fun scheduleIdentityResolution(snapshot: MediaSnapshot) {
         if (!running.get() || !senderConnected || snapshot.title.isBlank()) return
-        if (YOUTUBE_VIDEO_ID.matches(snapshot.mediaId)) return
+        if (currentVideoConfirmed && YOUTUBE_VIDEO_ID.matches(snapshot.mediaId)) return
 
         val key = identityKey(snapshot)
         synchronized(this) {
@@ -680,32 +765,76 @@ internal class YouTubeLoungeSession(
 
         identityResolverExecutor.execute {
             try {
-                val videoId = YouTubeMusicTrackResolver.resolve(snapshot) ?: return@execute
-                if (!running.get() || !senderConnected) return@execute
+                var candidateSnapshot = snapshot
+                repeat(IDENTITY_RESOLUTION_ATTEMPTS) { attempt ->
+                    if (!running.get() || !senderConnected) return@execute
 
-                val fresh = MediaSessionBridge.snapshot(appContext)
-                if (!sameTrack(snapshot, fresh)) {
-                    Log.i(TAG, "Discarded catalog identity for superseded track: ${snapshot.title.take(80)}")
-                    return@execute
+                    val videoId = YouTubeMusicTrackResolver.resolve(
+                        candidateSnapshot,
+                        forceRefresh = attempt > 0,
+                    )
+                    if (videoId != null) {
+                        val fresh = MediaSessionBridge.snapshot(appContext)
+                        if (!sameTrack(candidateSnapshot, fresh)) {
+                            Log.i(
+                                TAG,
+                                "Discarded catalog identity for superseded track: ${candidateSnapshot.title.take(80)}",
+                            )
+                            return@execute
+                        }
+
+                        val expected = senderExpectedVideoId
+                            ?.takeIf { SystemClock.elapsedRealtime() <= senderSelectionDeadlineMs }
+                        if (expected != null && videoId != expected) {
+                            Log.i(
+                                TAG,
+                                "Catalog identity does not match pending selection: " +
+                                    "expected=$expected resolved=$videoId title=${fresh.title.take(80)}",
+                            )
+                        } else {
+                            YouTubeMediaIdentityStore.rememberResolved(
+                                context = appContext,
+                                videoId = videoId,
+                                title = fresh.title,
+                                artist = fresh.artist,
+                                durationMs = fresh.durationMs,
+                            )
+                            val hydrated = MediaSessionBridge.snapshot(appContext)
+                            if (hydrated.mediaId == videoId && sameTrack(candidateSnapshot, hydrated)) {
+                                syncCurrentVideo(
+                                    hydrated,
+                                    invalidateWhenMissing = true,
+                                    previousSnapshot = lastMediaSnapshot,
+                                )
+                                setCurrentVideo(videoId)
+                                alignPlaylistContextForLocalVideo(videoId, hydrated)
+                                Log.i(
+                                    TAG,
+                                    "Resolved local track identity: ${hydrated.title.take(80)} -> $videoId",
+                                )
+                                sendNowPlaying(aid = null, snapshot = hydrated)
+                                sendHasPreviousNextChanged(aid = null, snapshot = hydrated)
+                                if (currentVideoConfirmed) queueStateChange(aid = null)
+                                synchronized(this) { lastMediaSnapshot = hydrated }
+                                return@execute
+                            }
+                        }
+                    }
+
+                    if (attempt + 1 < IDENTITY_RESOLUTION_ATTEMPTS) {
+                        sleepInterruptibly(IDENTITY_RETRY_DELAYS_MS[attempt])
+                        val fresh = MediaSessionBridge.snapshot(appContext)
+                        if (!sameTrack(candidateSnapshot, fresh)) {
+                            Log.i(
+                                TAG,
+                                "Discarded catalog identity for superseded track: ${candidateSnapshot.title.take(80)}",
+                            )
+                            return@execute
+                        }
+                        candidateSnapshot = fresh
+                    }
                 }
-
-                YouTubeMediaIdentityStore.rememberResolved(
-                    context = appContext,
-                    videoId = videoId,
-                    title = fresh.title,
-                    artist = fresh.artist,
-                    durationMs = fresh.durationMs,
-                )
-                val hydrated = MediaSessionBridge.snapshot(appContext)
-                if (hydrated.mediaId != videoId || !sameTrack(snapshot, hydrated)) return@execute
-
-                setCurrentVideo(videoId)
-                alignPlaylistContextForLocalVideo(videoId, hydrated)
-                Log.i(TAG, "Resolved local track identity: ${hydrated.title.take(80)} -> $videoId")
-                sendNowPlaying(aid = null, snapshot = hydrated)
-                sendHasPreviousNextChanged(aid = null, snapshot = hydrated)
-                queueStateChange(aid = null)
-                synchronized(this) { lastMediaSnapshot = hydrated }
+                Log.i(TAG, "Unable to resolve local track identity: ${candidateSnapshot.title.take(80)}")
             } finally {
                 synchronized(this) {
                     if (pendingIdentityKey == key) pendingIdentityKey = null
@@ -772,7 +901,7 @@ internal class YouTubeLoungeSession(
     private fun stateChangePayload(snapshot: MediaSnapshot): Map<String, Any> {
         val state = loungePlayerState(snapshot)
         val durationSeconds = snapshot.durationMs / 1000.0
-        return linkedMapOf(
+        val payload = linkedMapOf<String, Any>(
             "state" to state,
             "currentTime" to (snapshot.positionMs / 1000.0),
             "duration" to durationSeconds,
@@ -781,6 +910,15 @@ internal class YouTubeLoungeSession(
             "seekableEndTime" to durationSeconds,
             "cpn" to currentCpn,
         )
+        val videoId = currentVideoId?.takeIf { currentVideoConfirmed }
+        if (videoId != null) {
+            payload["videoId"] = videoId
+            if (playlistContextMatches(videoId)) {
+                currentListId?.let { payload["listId"] = it }
+                currentIndex?.let { payload["currentIndex"] = it }
+            }
+        }
+        return payload
     }
 
     private fun sendHasPreviousNextChanged(aid: Int?, snapshot: MediaSnapshot) {
@@ -851,14 +989,28 @@ internal class YouTubeLoungeSession(
             val url = "$URL_BIND?${bindParams.sendMessageQuery(aid)}"
             val response = LoungeHttp.postForm(url, form)
             check(response.code in 200..299) { "send message HTTP ${response.code}" }
+            if (name == "nowPlaying") {
+                val sentVideoId = values["videoId"] ?: "<none>"
+                val sentListId = values["listId"] ?: "<none>"
+                val sentIndex = values["currentIndex"] ?: -1
+                Log.i(
+                    TAG,
+                    "nowPlaying sent: HTTP ${response.code} videoId=$sentVideoId " +
+                        "listId=$sentListId index=$sentIndex",
+                )
+            }
         }.onFailure { Log.w(TAG, "Failed to send Lounge response $name", it) }
     }
 
     @Synchronized
     private fun setCurrentVideo(videoId: String) {
-        if (videoId == currentVideoId) return
+        if (videoId == currentVideoId) {
+            currentVideoConfirmed = true
+            return
+        }
         currentVideoId = videoId
         currentCpn = newCpn()
+        currentVideoConfirmed = true
     }
 
     @Synchronized
@@ -867,6 +1019,7 @@ internal class YouTubeLoungeSession(
             currentVideoId = null
             currentCpn = newCpn()
         }
+        currentVideoConfirmed = false
         if (clearIndex) currentIndex = null
     }
 
@@ -887,7 +1040,13 @@ internal class YouTubeLoungeSession(
         senderSelectionDeadlineMs = 0L
     }
 
-    private fun buildMusicUrl(videoId: String, listId: String?, index: Int?): String = Uri.Builder()
+    private fun buildMusicUrl(
+        videoId: String,
+        listId: String?,
+        index: Int?,
+        ctt: String?,
+        params: String?,
+    ): String = Uri.Builder()
         .scheme("https")
         .authority("music.youtube.com")
         .path("/watch")
@@ -897,6 +1056,8 @@ internal class YouTubeLoungeSession(
             if (listId != null && index != null && index >= 0) {
                 appendQueryParameter("index", index.toString())
             }
+            ctt?.takeIf { it.isNotBlank() }?.let { appendQueryParameter("ctt", it) }
+            params?.takeIf { it.isNotBlank() }?.let { appendQueryParameter("params", it) }
         }
         .build()
         .toString()
@@ -922,6 +1083,8 @@ internal class YouTubeLoungeSession(
         private const val TRACK_DURATION_TOLERANCE_MS = 2_500L
         private const val SENDER_SELECTION_GUARD_MS = 4_000L
         private const val SET_PLAYLIST_SEEK_DELAY_MS = 650L
+        private const val IDENTITY_RESOLUTION_ATTEMPTS = 3
+        private val IDENTITY_RETRY_DELAYS_MS = longArrayOf(500L, 1_000L)
         private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
 
         private fun newCpn(): String = UUID.randomUUID()

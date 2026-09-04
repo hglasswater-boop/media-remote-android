@@ -43,11 +43,25 @@ internal object YouTubeMusicTrackResolver {
         durationMs = snapshot.durationMs,
     )
 
-    fun resolve(title: String, artist: String, durationMs: Long): String? {
+    fun resolve(snapshot: MediaSnapshot, forceRefresh: Boolean): String? = resolve(
+        title = snapshot.title,
+        artist = snapshot.artist,
+        durationMs = snapshot.durationMs,
+        forceRefresh = forceRefresh,
+    )
+
+    fun resolve(
+        title: String,
+        artist: String,
+        durationMs: Long,
+        forceRefresh: Boolean = false,
+    ): String? {
         if (title.isBlank()) return null
         val key = signatureKey(title, artist, durationMs)
-        synchronized(cache) {
-            cache[key]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }?.let { return it.videoId }
+        if (!forceRefresh) {
+            synchronized(cache) {
+                cache[key]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }?.let { return it.videoId }
+            }
         }
 
         val resolved = runCatching { search(title, artist, durationMs) }

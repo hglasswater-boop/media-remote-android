@@ -15,19 +15,7 @@ internal object YouTubeMediaIdentityStore {
     private const val KEY_TITLE = "title"
     private const val KEY_ARTIST = "artist"
     private const val KEY_DURATION_MS = "duration_ms"
-    private const val KEY_PENDING_VIDEO_ID = "pending_video_id"
-    private const val KEY_PENDING_AT_MS = "pending_at_ms"
-    private const val PENDING_TTL_MS = 30_000L
     private const val DURATION_TOLERANCE_MS = 2_000L
-
-    fun rememberRequested(context: Context, videoId: String?) {
-        if (videoId.isNullOrBlank()) return
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_PENDING_VIDEO_ID, videoId)
-            .putLong(KEY_PENDING_AT_MS, System.currentTimeMillis())
-            .apply()
-    }
 
     fun rememberResolved(
         context: Context,
@@ -43,8 +31,6 @@ internal object YouTubeMediaIdentityStore {
             .putString(KEY_TITLE, normalize(title))
             .putString(KEY_ARTIST, normalize(artist))
             .putLong(KEY_DURATION_MS, durationMs.coerceAtLeast(0L))
-            .remove(KEY_PENDING_VIDEO_ID)
-            .remove(KEY_PENDING_AT_MS)
             .apply()
     }
 
@@ -103,17 +89,6 @@ internal object YouTubeMediaIdentityStore {
             ) {
                 return storedVideoId
             }
-        }
-
-        val pendingVideoId = prefs.getString(KEY_PENDING_VIDEO_ID, null)
-        val pendingAt = prefs.getLong(KEY_PENDING_AT_MS, 0L)
-        if (
-            !pendingVideoId.isNullOrBlank() &&
-            title.isNotBlank() &&
-            pendingAt > 0L &&
-            System.currentTimeMillis() - pendingAt in 0..PENDING_TTL_MS
-        ) {
-            return pendingVideoId
         }
 
         return null

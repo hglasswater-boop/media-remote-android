@@ -211,10 +211,7 @@ object MediaSessionBridge {
         add(metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI))
         add(metadata?.description?.mediaId)
         add(metadata?.description?.mediaUri?.toString())
-
-        metadata?.keySet()?.forEach { key ->
-            add(runCatching { metadata.getString(key) }.getOrNull())
-        }
+        addBundleValues(metadata?.description?.extras, candidates)
 
         addBundleValues(controllerExtras, candidates)
         addBundleValues(playbackState?.extras, candidates)
@@ -348,14 +345,12 @@ object MediaSessionBridge {
     private fun playFromUrl(context: Context, controller: MediaController?, rawUrl: String): Boolean {
         val link = YouTubeMusicLink.extract(rawUrl) ?: return false
         val playbackUri = link.playbackUri
-        val requestedVideoId = playbackUri.getQueryParameter("v")?.takeIf(YOUTUBE_VIDEO_ID::matches)
         val playlistId = playbackUri.getQueryParameter("list")?.takeIf { it.isNotBlank() }
 
         // YouTube Music's MediaSession playFromUri path often honors the video id but discards the
         // playlist/index context. For a Lounge setPlaylist request, the context is the important part:
         // use the app deep link so YouTube Music actually builds the requested playlist queue.
         if (playlistId == null && controller != null && trySessionUriPlayback(controller, playbackUri)) {
-            YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
             return true
         }
 
@@ -363,7 +358,6 @@ object MediaSessionBridge {
             context,
             Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
         )
-        if (launched) YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
         return launched
     }
 
