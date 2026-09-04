@@ -36,6 +36,13 @@ internal object YouTubeMusicQueueMediaId {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(item)
     }
 
+    /**
+     * RQ playback is anchored by its requested video. On YTM 9.34.52, including the Lounge
+     * position in WatchEndpoint field 3 selected a different same-title item; omit it.
+     */
+    fun encodeLoungeQueue(videoId: String, playlistId: String): String? =
+        encode(videoId, playlistId, index = null)
+
     private fun ByteArrayOutputStream.bytesField(number: Int, value: ByteArray) {
         varint((number.toLong() shl 3) or 2)
         varint(value.size.toLong())

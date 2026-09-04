@@ -30,6 +30,17 @@ class YouTubeMusicQueueMediaIdTest {
         assertEquals(decodedHex(25).dropLast(2) + "00", decodedHex(0))
     }
 
+    @Test fun loungeQueueAdapterAlwaysOmitsNativeIndex() {
+        val actual = Base64.getUrlDecoder()
+            .decode(YouTubeMusicQueueMediaId.encodeLoungeQueue("abcdefghijk", "RQtest"))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        assertEquals(
+            "0a0b6162636465666768696a6b1a1beaa8ddb90115" +
+                "0a0b6162636465666768696a6b1206525174657374",
+            actual,
+        )
+    }
+
     @Test fun indexUsesUnsignedVarintBeyondOneByte() {
         assertEquals(
             "0a0b6162636465666768696a6b1a1eeaa8ddb90118" +

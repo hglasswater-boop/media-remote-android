@@ -432,13 +432,15 @@ object MediaSessionBridge {
         val rawIndex = uri.getQueryParameter("index")
         val index = rawIndex?.toIntOrNull()
         if (rawIndex != null && index == null) return false
-        val mediaId = YouTubeMusicQueueMediaId.encode(videoId, listId, index) ?: return false
+        // The receiver's videoId is authoritative. Device comparison showed that passing the
+        // Lounge currentIndex in this private MediaItemInfo format can select a different item.
+        val mediaId = YouTubeMusicQueueMediaId.encodeLoungeQueue(videoId, listId) ?: return false
         // A binder dispatch is not proof of playback or queue acceptance. The Lounge selection
         // guard and subsequent MediaSession/nowPlaying logs supply that evidence asynchronously.
         return runCatching {
             controller.transportControls.playFromMediaId(mediaId, null)
             Log.i(TAG, "RQ playFromMediaId dispatched videoId=$videoId listId=$listId " +
-                "currentIndex=${index ?: "<absent>"} ytmVersion=$version " +
+                "receivedIndex=${index ?: "<absent>"} nativeIndexOmitted=true ytmVersion=$version " +
                 "cttPresent=${!uri.getQueryParameter("ctt").isNullOrBlank()} " +
                 "paramsPresent=${!uri.getQueryParameter("params").isNullOrBlank()} " +
                 "opaqueContextForwarded=false acceptance=unverified")

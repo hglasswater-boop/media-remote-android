@@ -20,12 +20,15 @@ For RQ selections only, use `playFromMediaId` with an embedded WatchEndpoint:
 | --- | --- |
 | MediaItemInfo | 1: video/server ID; 3: Command |
 | Command | 48687757: WatchEndpoint |
-| WatchEndpoint | 1: video ID; 2: playlist ID; 3: zero-based index (if present) |
+| WatchEndpoint | 1: video ID; 2: playlist ID; 3: internal index (not used for RQ playback) |
 
-Serialize protobuf then URL-safe base64 without padding/wrapping. These fields
+Serialize protobuf then URL-safe base64 without padding/wrapping. Fields 1/2
 were verified against the installed client's generated schema and parsing code.
-Its URL parser subtracts one from a URL index; the embedded endpoint is already
-zero-based, matching Lounge, so this adapter must NOT subtract one.
+Although field3 exists, it must be omitted for RQ playback: a controlled device
+comparison for the same incoming Far Caspian `Questions` video/RQ showed that
+including Lounge index22 selected the wrong item, while omitting it selected
+Questions / Far Caspian. Do not convert, decrement or otherwise forward the
+Lounge position into this private endpoint format.
 
 A temporary ADB-shell MediaSession diagnostic (no production app changes) sent
 the selected video and the received RQ through this encoding. The local queue
@@ -56,6 +59,15 @@ performed, and no local synthetic queue is installed.
   reported seek-to-end issue still require end-to-end testing after installation.
 - Empty-identity transition publications and ambiguous local catalog identities
   are separate issues; this change does not claim to fix them.
+
+## Follow-up: native RQ index omission (0.6.22)
+
+`playFromMediaId` uses the requested video ID as the RQ anchor. Retain the Lounge
+index for outgoing `nowPlaying`/queue context, but omit it from the native
+MediaItemInfo. A same-device controlled dispatch with `videoId=mO5kvldneUM`
+and the active RQ confirmed Questions / Far Caspian only without field3. This
+is a version-scoped interoperability observation, not a claim about the public
+meaning of field3.
 
 ## Follow-up: local Next handling (0.6.19)
 
