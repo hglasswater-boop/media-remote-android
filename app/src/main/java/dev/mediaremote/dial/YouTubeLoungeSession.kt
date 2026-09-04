@@ -71,9 +71,11 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentParams: String? = null
     @Volatile private var senderExpectedVideoId: String? = null
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
+    @Volatile private var senderSelectionBaseline: MediaSnapshot? = null
+    @Volatile private var senderSelectionCommandAccepted = false
     @Volatile private var currentVideoConfirmed = false
     @Volatile private var currentCpn: String = newCpn()
-    private var lastMediaSnapshot: MediaSnapshot? = null
+    @Volatile private var lastMediaSnapshot: MediaSnapshot? = null
 
     fun start(onReady: (() -> Unit)? = null) {
         if (!running.compareAndSet(false, true)) return
@@ -378,6 +380,8 @@ internal class YouTubeLoungeSession(
         }
 
         if (videoId != null && isSetPlaylist) {
+            senderSelectionBaseline = MediaSessionBridge.snapshot(appContext)
+            senderSelectionCommandAccepted = false
             setCurrentVideo(videoId)
             currentVideoConfirmed = false
             senderExpectedVideoId = videoId
@@ -387,6 +391,8 @@ internal class YouTubeLoungeSession(
             clearCurrentVideoIdentity(clearIndex = false)
             senderExpectedVideoId = null
             senderSelectionDeadlineMs = 0L
+            senderSelectionBaseline = null
+            senderSelectionCommandAccepted = false
         }
 
         Log.i(
@@ -397,8 +403,15 @@ internal class YouTubeLoungeSession(
 
         if (isSetPlaylist && videoId != null) {
             val url = buildMusicUrl(videoId, listId, currentIndex, currentCtt, currentParams)
-            MediaSessionBridge.execute(appContext, RemoteMediaCommand.PlayFromUrl(url))
+            senderSelectionCommandAccepted = MediaSessionBridge.execute(
+                appContext,
+                RemoteMediaCommand.PlayFromUrl(url),
+            )
             if (currentTimeSeconds != null && currentTimeSeconds > 1.0) {
+                Log.i(
+                    TAG,
+                    "setPlaylist seek scheduled: videoId=$videoId currentTime=$currentTimeSeconds",
+                )
                 mediaSyncExecutor.schedule(
                     {
                         if (running.get()) {
@@ -664,6 +677,8 @@ internal class YouTubeLoungeSession(
         if (senderExpectedVideoId != null && expected == null) {
             senderExpectedVideoId = null
             senderSelectionDeadlineMs = 0L
+            senderSelectionBaseline = null
+            senderSelectionCommandAccepted = false
             if (!currentVideoConfirmed) clearCurrentVideoIdentity(clearIndex = false)
         }
 
@@ -678,12 +693,34 @@ internal class YouTubeLoungeSession(
             }
 
         if (expected != null) {
-            if (playlistResolved == expected || directResolved == expected) {
+            val transitionedToRequestedSelection =
+                senderSelectionCommandAccepted && pendingSelectionTrackTransitioned(snapshot, previousSnapshot)
+            if (
+                playlistResolved == expected ||
+                directResolved == expected ||
+                transitionedToRequestedSelection
+            ) {
                 senderExpectedVideoId = null
                 senderSelectionDeadlineMs = 0L
+                senderSelectionBaseline = null
+                senderSelectionCommandAccepted = false
                 setCurrentVideo(expected)
                 currentVideoConfirmed = true
                 alignPlaylistContextForLocalVideo(expected, snapshot)
+                YouTubeMediaIdentityStore.rememberResolved(
+                    context = appContext,
+                    videoId = expected,
+                    title = snapshot.title,
+                    artist = snapshot.artist,
+                    durationMs = snapshot.durationMs,
+                )
+                if (transitionedToRequestedSelection && playlistResolved != expected && directResolved != expected) {
+                    Log.i(
+                        TAG,
+                        "Confirmed pending selection from MediaSession transition: " +
+                            "videoId=$expected title=${snapshot.title.take(80)}",
+                    )
+                }
             }
             // While YouTube Music is still switching queues, the sender's setPlaylist videoId is
             // authoritative. Do not let lagging old MediaSession metadata overwrite it.
@@ -701,9 +738,23 @@ internal class YouTubeLoungeSession(
             setCurrentVideo(directResolved)
             currentVideoConfirmed = true
             alignPlaylistContextForLocalVideo(directResolved, snapshot)
-        } else if (invalidateWhenMissing && snapshot.title.isNotBlank()) {
+        } else if (
+            invalidateWhenMissing &&
+            snapshot.title.isNotBlank() &&
+            (!currentVideoConfirmed || previousSnapshot?.let { trackIdentityChanged(it, snapshot) } == true)
+        ) {
             clearCurrentVideoIdentity(clearIndex = false)
         }
+    }
+
+    private fun pendingSelectionTrackTransitioned(
+        snapshot: MediaSnapshot,
+        previousSnapshot: MediaSnapshot?,
+    ): Boolean {
+        if (!snapshot.available || snapshot.title.isBlank()) return false
+        val baseline = senderSelectionBaseline ?: previousSnapshot ?: return false
+        if (trackIdentityChanged(baseline, snapshot)) return true
+        return baseline.title.isBlank() && baseline.mediaId.isBlank() && snapshot.queueSize > 0
     }
 
     private fun playlistVideoIdFromSnapshot(snapshot: MediaSnapshot): String? {
@@ -791,6 +842,17 @@ internal class YouTubeLoungeSession(
                                 "Catalog identity does not match pending selection: " +
                                     "expected=$expected resolved=$videoId title=${fresh.title.take(80)}",
                             )
+                        } else if (
+                            currentVideoConfirmed &&
+                            currentVideoId != null &&
+                            currentVideoId != videoId
+                        ) {
+                            Log.i(
+                                TAG,
+                                "Discarded catalog identity for confirmed selection: " +
+                                    "current=$currentVideoId resolved=$videoId title=${fresh.title.take(80)}",
+                            )
+                            return@execute
                         } else {
                             YouTubeMediaIdentityStore.rememberResolved(
                                 context = appContext,
@@ -1038,6 +1100,8 @@ internal class YouTubeLoungeSession(
         clearPlaylistContext()
         senderExpectedVideoId = null
         senderSelectionDeadlineMs = 0L
+        senderSelectionBaseline = null
+        senderSelectionCommandAccepted = false
     }
 
     private fun buildMusicUrl(
