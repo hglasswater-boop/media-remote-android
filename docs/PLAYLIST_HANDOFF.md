@@ -1,25 +1,17 @@
 # Playlist handoff
 
-MediaRemote assumes the controller and playback phones use the same Google account in YouTube Music.
+Playlist handoff is supported only through the native YouTube Music Cast picker.
 
-## Pairing
+1. Install YT Music Remote on the playback phone.
+2. Allow notification access on the playback phone.
+3. Start "Cast待受" in YT Music Remote.
+4. Put both phones on the same LAN / Wi-Fi.
+5. On the controller phone, open YouTube Music and choose `YT Music Remote <device>` from the Cast picker.
+6. Select the playlist and the desired song in YouTube Music.
 
-1. Start LAN remote mode on the playback phone.
-2. Scan the pairing QR with the controller phone.
-3. MediaRemote stores the host, port and pairing token locally.
+The sender supplies the Lounge `videoId`, queue `listId`, index, and queue IDs. The playback phone
+passes the selected queue item to YouTube Music through its MediaSession and reports the resulting
+now-playing state back through Lounge.
 
-## Playlist handoff
-
-1. On the controller phone, open YouTube Music.
-2. Select a playlist.
-3. Use Share and choose MediaRemote.
-4. MediaRemote extracts the YouTube Music URL and sends it to the paired playback phone.
-5. The playback phone first tries the active YouTube Music MediaSession (`playFromUri`). If unavailable, it falls back to opening the URL in YouTube Music.
-
-The app does not store Google credentials or YouTube API keys.
-
-## Install QR
-
-The playback phone also shows a QR pointing at the rolling signed APK:
-
-`https://github.com/hglasswater-boop/media-remote-android/releases/download/debug-latest/MediaRemote-latest.apk`
+The controller phone does not need YT Music Remote. The YouTube Music Cast picker is the only
+supported controller entry point.
