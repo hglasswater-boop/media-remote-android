@@ -408,6 +408,15 @@ internal class YouTubeLoungeSession(
                 appContext,
                 RemoteMediaCommand.PlayFromUrl(url),
             )
+            if (!senderSelectionCommandAccepted) {
+                // A rejected queue handoff must not seek the old song or report selection success.
+                // Expire the pending selection so the next snapshot can recover the actual track.
+                senderSelectionDeadlineMs = 0L
+                Log.w(TAG, "setPlaylist dispatch rejected: videoId=$videoId; seek skipped")
+                onStatus("YouTube Musicへの選曲指示を送信できませんでした")
+                requestMediaSync(message.aid, force = true, delayMs = 80)
+                return
+            }
             if (currentTimeSeconds != null && currentTimeSeconds > 1.0) {
                 Log.i(
                     TAG,

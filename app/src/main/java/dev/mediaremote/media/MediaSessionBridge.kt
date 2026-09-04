@@ -348,28 +348,11 @@ object MediaSessionBridge {
         val playbackUri = link.playbackUri
         val playlistId = playbackUri.getQueryParameter("list")?.takeIf { it.isNotBlank() }
         val isLoungeQueue = playlistId?.startsWith("RQ", ignoreCase = true) == true
-        val nativePlaylistUri = if (isLoungeQueue) {
-            playbackUri.buildUpon()
-                .scheme("vnd.youtube.music")
-                .build()
-        } else {
-            null
-        }
+        if (isLoungeQueue) return playLoungeQueue(context, controller, playbackUri)
 
         // Lounge delivers this command while MediaRemote is normally in the background. Android can
         // reject a background startActivity, so always try the MediaSession transport command first.
-        // The URI still carries list/index/ctt/params; YouTube Music builds the queue when it honors
-        // that context, and the deep-link remains a foreground fallback for builds that do not.
-        if (controller != null && nativePlaylistUri != null &&
-            trySessionUriPlayback(controller, nativePlaylistUri)
-        ) {
-            Log.i(
-                TAG,
-                "PlayFromUrl handled by MediaSession videoId=${playbackUri.getQueryParameter("v")} " +
-                    "listId=${playlistId ?: "<none>"} scheme=${nativePlaylistUri.scheme}",
-            )
-            return true
-        }
+        // Ordinary playlist links retain their existing URI transport. RQ queues must not use it.
         if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
             Log.i(
                 TAG,
@@ -379,27 +362,53 @@ object MediaSessionBridge {
             return true
         }
 
-        val deepLinkUri = nativePlaylistUri ?: playbackUri
         val launched = launchYouTubeMusic(
             context,
-            Intent(Intent.ACTION_VIEW, deepLinkUri).apply { setPackage(TARGET_PACKAGE) },
+            Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
         )
-        val fallbackLaunched = if (!launched && nativePlaylistUri != null) {
-            launchYouTubeMusic(
-                context,
-                Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
-            )
-        } else {
-            false
-        }
-        val anyLaunched = launched || fallbackLaunched
         Log.i(
             TAG,
-            "PlayFromUrl deep-link fallback launched=$anyLaunched " +
+            "PlayFromUrl deep-link fallback launched=$launched " +
                 "videoId=${playbackUri.getQueryParameter("v")} listId=${playlistId ?: "<none>"} " +
-                "scheme=${if (launched) deepLinkUri.scheme else playbackUri.scheme}",
+                "scheme=${playbackUri.scheme}",
         )
-        return anyLaunched
+        return launched
+    }
+
+    @Suppress("DEPRECATION")
+    private fun playLoungeQueue(context: Context, controller: MediaController?, uri: Uri): Boolean {
+        val version = runCatching {
+            context.packageManager.getPackageInfo(TARGET_PACKAGE, 0).versionName
+        }.getOrNull()
+        val actions = controller?.playbackState?.actions ?: 0L
+        if (version != YouTubeMusicQueueMediaId.VERIFIED_VERSION || controller == null ||
+            actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID == 0L
+        ) {
+            Log.w(TAG, "RQ handoff unavailable: ytmVersion=$version controller=${controller != null} " +
+                "playFromMediaId=${actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID != 0L}; no URI fallback")
+            return false
+        }
+        val videoId = uri.getQueryParameter("v").orEmpty()
+        val listId = uri.getQueryParameter("list").orEmpty()
+        val rawIndex = uri.getQueryParameter("index")
+        val index = rawIndex?.toIntOrNull()
+        if (rawIndex != null && index == null) return false
+        val mediaId = YouTubeMusicQueueMediaId.encode(videoId, listId, index) ?: return false
+        // A binder dispatch is not proof of playback or queue acceptance. The Lounge selection
+        // guard and subsequent MediaSession/nowPlaying logs supply that evidence asynchronously.
+        return runCatching {
+            controller.transportControls.playFromMediaId(mediaId, null)
+            Log.i(TAG, "RQ playFromMediaId dispatched videoId=$videoId listId=$listId " +
+                "currentIndex=${index ?: "<absent>"} ytmVersion=$version " +
+                "cttPresent=${!uri.getQueryParameter("ctt").isNullOrBlank()} " +
+                "paramsPresent=${!uri.getQueryParameter("params").isNullOrBlank()} " +
+                "opaqueContextForwarded=false acceptance=unverified")
+            true
+        }.getOrElse {
+            // Exception messages can include the encoded request. Do not log credentials/URLs.
+            Log.w(TAG, "RQ playFromMediaId failed type=${it.javaClass.simpleName}; no URI fallback")
+            false
+        }
     }
 
     private fun trySessionUriPlayback(controller: MediaController, uri: Uri): Boolean {
