@@ -381,7 +381,13 @@ internal class YouTubeLoungeSession(
             if (hasParams) currentParams = params
         }
 
-        if (videoId != null && isSetPlaylist) {
+        val duplicatePendingSelection =
+            isSetPlaylist &&
+                videoId != null &&
+                videoId == senderExpectedVideoId &&
+                SystemClock.elapsedRealtime() <= senderSelectionDeadlineMs
+
+        if (videoId != null && isSetPlaylist && !duplicatePendingSelection) {
             senderSelectionBaseline = MediaSessionBridge.snapshot(appContext)
             senderSelectionCommandAccepted = false
             setCurrentVideo(videoId)
@@ -404,6 +410,14 @@ internal class YouTubeLoungeSession(
         )
 
         if (isSetPlaylist && videoId != null) {
+            if (duplicatePendingSelection) {
+                // YouTube Music commonly emits the same selection twice while it switches the
+                // MediaSession queue. Re-dispatching would replace the old-track baseline with
+                // the just-arriving track and make the pending-selection confirmation impossible.
+                Log.i(TAG, "Duplicate pending setPlaylist ignored: videoId=$videoId")
+                requestMediaSync(message.aid, force = true, delayMs = 450)
+                return
+            }
             val url = buildMusicUrl(videoId, listId, currentIndex, currentCtt, currentParams)
             senderSelectionCommandAccepted = MediaSessionBridge.execute(
                 appContext,

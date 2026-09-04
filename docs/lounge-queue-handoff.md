@@ -70,6 +70,15 @@ Random selections, rewrites, short/unrelated windows and invalid queue IDs still
 fall through to the existing media-ID/catalog logic. The RQ display-name limitation
 is unchanged: Lounge supplies an RQ queue ID, not the sender's original PL title.
 
+## Follow-up: duplicate selection messages (0.6.20)
+
+Lounge can emit two identical `setPlaylist` messages a fraction of a second apart.
+The second can arrive after the MediaSession has begun changing, so replacing the
+selection baseline then makes a real transition look unchanged. While the same
+target is within the four-second pending-selection guard, retain the first
+baseline and command; update the received context but do not dispatch or seek
+again. A later intentional same-song selection is not suppressed after the guard.
+
 ## Validation procedure
 
 Build/test/lint. Update with the same signing certificate (do not clear app data).
