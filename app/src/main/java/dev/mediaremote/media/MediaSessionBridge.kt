@@ -30,7 +30,39 @@ data class MediaSnapshot(
     val packageName: String = "",
     val queueIndex: Int = -1,
     val queueSize: Int = 0,
+    /** The MediaSession queue window, in the order exposed by the player. */
+    val queueWindow: List<MediaQueueWindowItem> = emptyList(),
 )
+
+data class MediaQueueWindowItem(
+    val queueId: Long,
+    val title: String,
+    val artist: String,
+)
+
+/**
+ * YouTube Music exposes a sliding window whose first item becomes the active item after Next.
+ * Require two consecutive stable queue ids: titles alone are not enough when a queue has repeats.
+ */
+internal object MediaQueueWindowShift {
+    fun forwardShift(
+        previous: List<MediaQueueWindowItem>,
+        current: List<MediaQueueWindowItem>,
+        maxShift: Int = 5,
+    ): Int? {
+        if (previous.size < 3 || current.size < 2) return null
+        for (shift in 1..minOf(maxShift, previous.lastIndex)) {
+            val comparisons = minOf(3, previous.size - shift, current.size)
+            if (comparisons < 2) continue
+            if ((0 until comparisons).all { offset ->
+                    previous[offset + shift].queueId > 0L &&
+                        previous[offset + shift].queueId == current[offset].queueId
+                }
+            ) return shift
+        }
+        return null
+    }
+}
 
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
@@ -170,6 +202,13 @@ object MediaSessionBridge {
             packageName = controller.packageName,
             queueIndex = activeQueueIndex,
             queueSize = queue.size,
+            queueWindow = queue.map { item ->
+                MediaQueueWindowItem(
+                    queueId = item.queueId,
+                    title = item.description.title?.toString().orEmpty(),
+                    artist = item.description.subtitle?.toString().orEmpty(),
+                )
+            },
         )
     }
 

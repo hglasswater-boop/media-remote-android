@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import dev.mediaremote.media.MediaSessionBridge
 import dev.mediaremote.media.MediaSnapshot
+import dev.mediaremote.media.MediaQueueWindowShift
 import dev.mediaremote.media.RemoteMediaCommand
 import dev.mediaremote.media.YouTubeMediaIdentityStore
 import dev.mediaremote.media.YouTubeMusicTrackResolver
@@ -542,7 +543,7 @@ internal class YouTubeLoungeSession(
         sendHasPreviousNextChanged(aid, snapshot)
         sendNowPlaying(aid, snapshot)
         if (currentVideoConfirmed) queueStateChange(aid)
-        lastMediaSnapshot = snapshot
+        lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
     }
 
     @Synchronized
@@ -592,7 +593,7 @@ internal class YouTubeLoungeSession(
         }
         if (force || mediaChanged || actionsChanged) sendHasPreviousNextChanged(aid, snapshot)
 
-        lastMediaSnapshot = snapshot
+        lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
     }
 
     private fun trackIdentityChanged(previous: MediaSnapshot, current: MediaSnapshot): Boolean {
@@ -692,7 +693,7 @@ internal class YouTubeLoungeSession(
             if (!currentVideoConfirmed) clearCurrentVideoIdentity(clearIndex = false)
         }
 
-        val playlistResolved = playlistVideoIdFromSnapshot(snapshot)
+        val playlistResolved = playlistVideoIdFromSnapshot(snapshot, previousSnapshot)
         val directResolved = snapshot.mediaId
             .takeIf(YOUTUBE_VIDEO_ID::matches)
             ?.takeUnless { candidate ->
@@ -740,11 +741,24 @@ internal class YouTubeLoungeSession(
         if (playlistResolved != null) {
             setCurrentVideo(playlistResolved)
             currentVideoConfirmed = true
-            currentIndex = snapshot.queueIndex
+            // queueIndex is relative to YTM's exposed sliding window (normally zero after Next),
+            // not the absolute Lounge playlist position.
+            alignPlaylistContextForLocalVideo(playlistResolved, snapshot)
             return
         }
 
         if (directResolved != null) {
+            // A catalog/cache result can describe a different edition of the *same* track. Once a
+            // sliding-window transition has proved the Lounge item, do not let that result replace
+            // the known item on a later sync of the unchanged local track.
+            if (
+                currentVideoConfirmed &&
+                currentVideoId != directResolved &&
+                currentVideoId != null &&
+                playlistContextMatches(currentVideoId!!) &&
+                previousSnapshot != null &&
+                !trackIdentityChanged(previousSnapshot, snapshot)
+            ) return
             setCurrentVideo(directResolved)
             currentVideoConfirmed = true
             alignPlaylistContextForLocalVideo(directResolved, snapshot)
@@ -767,11 +781,34 @@ internal class YouTubeLoungeSession(
         return baseline.title.isBlank() && baseline.mediaId.isBlank() && snapshot.queueSize > 0
     }
 
-    private fun playlistVideoIdFromSnapshot(snapshot: MediaSnapshot): String? {
+    private fun playlistVideoIdFromSnapshot(
+        snapshot: MediaSnapshot,
+        previousSnapshot: MediaSnapshot?,
+    ): String? {
         val ids = currentVideoIds
         if (currentListId == null || ids.isEmpty()) return null
-        if (snapshot.queueSize <= 1 || snapshot.queueSize != ids.size) return null
-        return ids.getOrNull(snapshot.queueIndex)
+        if (snapshot.queueSize > 1 && snapshot.queueSize == ids.size) {
+            return ids.getOrNull(snapshot.queueIndex)
+        }
+
+        // A media queue window is not the full Lounge queue. When it advances, map the proven
+        // window shift onto the current absolute Lounge index instead of searching a potentially
+        // different YouTube catalog edition of the same title.
+        val absoluteIndex = currentIndex ?: return null
+        val currentId = currentVideoId ?: return null
+        if (!currentVideoConfirmed || ids.getOrNull(absoluteIndex) != currentId) return null
+        val previous = previousSnapshot ?: return null
+        // previous.mediaId is the verified absolute context remembered after the preceding sync.
+        // Without it, a repeated sync of the same new window could advance the index twice.
+        if (previous.mediaId != currentId) return null
+        val shift = MediaQueueWindowShift.forwardShift(previous.queueWindow, snapshot.queueWindow) ?: return null
+        val resolved = ids.getOrNull(absoluteIndex + shift) ?: return null
+        Log.i(
+            TAG,
+            "Resolved local track from MediaSession queue shift: videoId=$resolved " +
+                "index=${absoluteIndex + shift} shift=$shift",
+        )
+        return resolved
     }
 
     @Synchronized
@@ -808,6 +845,12 @@ internal class YouTubeLoungeSession(
             else -> ids.contains(videoId)
         }
     }
+
+    private fun snapshotWithConfirmedIdentity(snapshot: MediaSnapshot): MediaSnapshot =
+        currentVideoId
+            ?.takeIf { currentVideoConfirmed && YOUTUBE_VIDEO_ID.matches(it) }
+            ?.let { snapshot.copy(mediaId = it) }
+            ?: snapshot
 
     /**
      * Android sometimes gives us the new title/artist but no usable videoId. Resolve that identity
@@ -887,7 +930,7 @@ internal class YouTubeLoungeSession(
                                 sendNowPlaying(aid = null, snapshot = hydrated)
                                 sendHasPreviousNextChanged(aid = null, snapshot = hydrated)
                                 if (currentVideoConfirmed) queueStateChange(aid = null)
-                                synchronized(this) { lastMediaSnapshot = hydrated }
+                                synchronized(this) { lastMediaSnapshot = snapshotWithConfirmedIdentity(hydrated) }
                                 return@execute
                             }
                         }

@@ -57,6 +57,19 @@ performed, and no local synthetic queue is installed.
 - Empty-identity transition publications and ambiguous local catalog identities
   are separate issues; this change does not claim to fix them.
 
+## Follow-up: local Next handling (0.6.19)
+
+The player exposes a 25-item **sliding queue window**, not the full Lounge queue.
+After `Next`, its active item and window index are both zero, while the first two
+or more queue IDs are the previous window shifted left. Use that two-consecutive-ID
+proof to advance the stored absolute Lounge index and select the corresponding
+received video ID. Do not use title-only matching or catalog search in that case.
+
+This is deliberately limited to a verified forward overlap (at most five items).
+Random selections, rewrites, short/unrelated windows and invalid queue IDs still
+fall through to the existing media-ID/catalog logic. The RQ display-name limitation
+is unchanged: Lounge supplies an RQ queue ID, not the sender's original PL title.
+
 ## Validation procedure
 
 Build/test/lint. Update with the same signing certificate (do not clear app data).
