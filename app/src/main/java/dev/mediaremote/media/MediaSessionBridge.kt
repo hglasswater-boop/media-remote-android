@@ -29,14 +29,13 @@ data class MediaSnapshot(
     val packageName: String = "",
 )
 
-/**
- * Bridge for the official YouTube Music Android app only.
- *
- * MediaRemote deliberately does not try to be a generic media controller. Keeping the target package
- * explicit makes command routing and fallback behavior predictable.
- */
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
+
+    private data class ControllerSource(
+        val controller: MediaController,
+        val notification: YouTubeMusicNotificationSession? = null,
+    )
 
     private data class SessionSignature(
         val mediaId: String,
@@ -48,45 +47,67 @@ object MediaSessionBridge {
         val queueTitles: List<String>,
     )
 
-    private fun controller(context: Context): MediaController? {
+    private fun controllerSource(context: Context): ControllerSource? {
+        MediaNotificationListener.currentYouTubeMusicSession(context)?.let { (controller, notification) ->
+            return ControllerSource(controller, notification)
+        }
+
         val manager = context.getSystemService(MediaSessionManager::class.java)
         val listener = ComponentName(context, MediaNotificationListener::class.java)
-
-        return try {
-            manager.getActiveSessions(listener)
-                .firstOrNull { it.packageName == TARGET_PACKAGE }
+        val sessions = try {
+            manager.getActiveSessions(listener).filter { it.packageName == TARGET_PACKAGE }
         } catch (_: SecurityException) {
-            null
+            emptyList()
         }
+
+        return sessions.maxWithOrNull(
+            compareBy<MediaController> { sessionRank(it.playbackState?.state ?: PlaybackState.STATE_NONE) }
+                .thenBy { it.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty().isNotBlank() }
+                .thenBy { it.playbackState?.lastPositionUpdateTime ?: 0L },
+        )?.let(::ControllerSource)
+    }
+
+    private fun controller(context: Context): MediaController? = controllerSource(context)?.controller
+
+    private fun sessionRank(state: Int): Int = when (state) {
+        PlaybackState.STATE_PLAYING -> 5
+        PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING -> 4
+        PlaybackState.STATE_PAUSED -> 3
+        PlaybackState.STATE_SKIPPING_TO_NEXT,
+        PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
+        PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM -> 2
+        else -> 1
     }
 
     fun snapshot(context: Context): MediaSnapshot {
-        val controller = controller(context) ?: return MediaSnapshot(available = false)
+        val source = controllerSource(context) ?: return MediaSnapshot(available = false)
+        val controller = source.controller
         val metadata = controller.metadata
         val playbackState = controller.playbackState
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
-        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
-        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+
+        // The media notification is the user-visible source of truth. YouTube Music can leave an old
+        // MediaSession active whose PlaybackState keeps moving even though its metadata is frozen on
+        // the previous track. Prefer the notification title/artist when we have its exact session token.
+        val title = source.notification?.title?.takeIf { it.isNotBlank() }
+            ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        val artist = source.notification?.artist?.takeIf { it.isNotBlank() }
+            ?: metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+
         val queue = controller.queue.orEmpty()
         val activeQueueId = playbackState?.activeQueueItemId ?: -1L
         var activeQueueIndex = queue.indexOfFirst { it.queueId == activeQueueId }
 
-        // Some YouTube Music builds leave activeQueueItemId unknown while still publishing a queue.
-        // In that case, use the metadata title / artist to identify the active queue entry.
         if (activeQueueIndex < 0 && title.isNotBlank()) {
             activeQueueIndex = queue.indexOfFirst { item ->
-                val description = item.description
-                val queueTitle = description.title?.toString().orEmpty()
-                val queueArtist = description.subtitle?.toString().orEmpty()
-                queueTitle == title && (artist.isBlank() || queueArtist.contains(artist, ignoreCase = true))
+                queueItemMatches(item.description, title, artist)
             }
+        }
+        if (activeQueueIndex < 0 && queue.size == 1) {
+            activeQueueIndex = 0
         }
         val activeDescription = queue.getOrNull(activeQueueIndex)?.description
 
-        // YouTube Music's public MediaSession surface is inconsistent between app versions. The id
-        // can live in metadata, a queue description, controller extras, PlaybackState extras or even
-        // a custom-action bundle. Scan the complete identity surface before falling back to the last
-        // signature-bound id that we previously proved.
         val resolvedMediaId = resolveYouTubeVideoId(
             metadata = metadata,
             activeDescription = activeDescription,
@@ -127,12 +148,23 @@ object MediaSessionBridge {
         )
     }
 
-    /**
-     * YouTube Music does not consistently expose the video id through METADATA_KEY_MEDIA_ID.
-     * Resolve every plausible MediaSession representation into the canonical 11-character YouTube
-     * video id. Opaque bundle keys are intentionally scanned too because YouTube Music has changed
-     * its internal key names between releases.
-     */
+    private fun queueItemMatches(description: MediaDescription, title: String, artist: String): Boolean {
+        val queueTitle = description.title?.toString().orEmpty()
+        val queueArtist = description.subtitle?.toString().orEmpty()
+        if (normalizeMediaText(queueTitle) != normalizeMediaText(title)) return false
+        if (artist.isBlank()) return true
+
+        val wantedArtist = normalizeMediaText(artist)
+        val candidateArtist = normalizeMediaText(queueArtist)
+        return candidateArtist == wantedArtist ||
+            candidateArtist.contains(wantedArtist) ||
+            wantedArtist.contains(candidateArtist)
+    }
+
+    private fun normalizeMediaText(value: String): String = value
+        .lowercase()
+        .replace(MEDIA_TEXT_NOISE, "")
+
     private fun resolveYouTubeVideoId(
         metadata: MediaMetadata?,
         activeDescription: MediaDescription?,
@@ -152,8 +184,6 @@ object MediaSessionBridge {
         add(activeDescription?.mediaId)
         add(activeDescription?.mediaUri?.toString())
 
-        // Do not filter metadata by key name. Newer YouTube Music versions can expose the id under
-        // obfuscated / generic keys while the value itself still contains a canonical id or URL.
         metadata?.keySet()?.forEach { key ->
             add(runCatching { metadata.getString(key) }.getOrNull())
         }
@@ -168,11 +198,7 @@ object MediaSessionBridge {
         return candidates.firstNotNullOfOrNull(::extractYouTubeVideoId).orEmpty()
     }
 
-    private fun addBundleValues(
-        bundle: Bundle?,
-        output: MutableList<String>,
-        depth: Int = 0,
-    ) {
+    private fun addBundleValues(bundle: Bundle?, output: MutableList<String>, depth: Int = 0) {
         if (bundle == null || depth > MAX_BUNDLE_DEPTH) return
         bundle.keySet().forEach { key ->
             addBundleValue(runCatching { bundle.get(key) }.getOrNull(), output, depth)
@@ -202,9 +228,7 @@ object MediaSessionBridge {
         if (queryVideoId != null) return queryVideoId
 
         if (uri?.host.equals("youtu.be", ignoreCase = true)) {
-            uri?.lastPathSegment
-                ?.takeIf(YOUTUBE_VIDEO_ID::matches)
-                ?.let { return it }
+            uri?.lastPathSegment?.takeIf(YOUTUBE_VIDEO_ID::matches)?.let { return it }
         }
 
         val tailCandidate = value
@@ -221,11 +245,6 @@ object MediaSessionBridge {
             ?.takeIf(YOUTUBE_VIDEO_ID::matches)
     }
 
-    /**
-     * Android's PlaybackState.position is the position at lastPositionUpdateTime, not necessarily
-     * the position at the instant we query it. Extrapolate while playing so remote UIs receive a
-     * moving clock instead of repeatedly seeing the same stale base position.
-     */
     private fun currentPositionMs(state: PlaybackState?, durationMs: Long): Long {
         if (state == null) return 0L
 
@@ -235,21 +254,15 @@ object MediaSessionBridge {
             state.lastPositionUpdateTime > 0L &&
             state.playbackSpeed != 0f
         ) {
-            val elapsed = (SystemClock.elapsedRealtime() - state.lastPositionUpdateTime)
-                .coerceAtLeast(0L)
+            val elapsed = (SystemClock.elapsedRealtime() - state.lastPositionUpdateTime).coerceAtLeast(0L)
             position += (elapsed * state.playbackSpeed).toLong()
         }
 
-        return if (durationMs > 0L) {
-            position.coerceIn(0L, durationMs)
-        } else {
-            position.coerceAtLeast(0L)
-        }
+        return if (durationMs > 0L) position.coerceIn(0L, durationMs) else position.coerceAtLeast(0L)
     }
 
     fun execute(context: Context, command: RemoteMediaCommand): Boolean {
         val controller = controller(context)
-
         return when (command) {
             is RemoteMediaCommand.PlayFromSearch -> playFromSearch(context, controller, command.query)
             is RemoteMediaCommand.PlayFromUrl -> playFromUrl(context, controller, command.url)
@@ -265,9 +278,7 @@ object MediaSessionBridge {
                     is RemoteMediaCommand.SeekBy -> {
                         val current = currentPositionMs(
                             activeController.playbackState,
-                            activeController.metadata
-                                ?.getLong(MediaMetadata.METADATA_KEY_DURATION)
-                                ?: 0L,
+                            activeController.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
                         )
                         controls.seekTo(clampSeekTarget(activeController, current + command.deltaMs))
                         true
@@ -291,11 +302,7 @@ object MediaSessionBridge {
         return targetMs.coerceIn(0L, duration)
     }
 
-    private fun playFromSearch(
-        context: Context,
-        controller: MediaController?,
-        query: String,
-    ): Boolean {
+    private fun playFromSearch(context: Context, controller: MediaController?, query: String): Boolean {
         val clean = query.trim()
         if (clean.isBlank()) return false
 
@@ -315,41 +322,25 @@ object MediaSessionBridge {
         )
     }
 
-    private fun playFromUrl(
-        context: Context,
-        controller: MediaController?,
-        rawUrl: String,
-    ): Boolean {
+    private fun playFromUrl(context: Context, controller: MediaController?, rawUrl: String): Boolean {
         val link = YouTubeMusicLink.extract(rawUrl) ?: return false
         val playbackUri = link.playbackUri
-        val requestedVideoId = playbackUri.getQueryParameter("v")
-            ?.takeIf(YOUTUBE_VIDEO_ID::matches)
+        val requestedVideoId = playbackUri.getQueryParameter("v")?.takeIf(YOUTUBE_VIDEO_ID::matches)
 
         if (controller != null && trySessionUriPlayback(controller, playbackUri)) {
             YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
             return true
         }
 
-        // YouTube Music has historically advertised some media-session capabilities without
-        // reliably acting on every URL. An explicit deep link is therefore the authoritative
-        // fallback instead of treating a transportControls call as success just because it did
-        // not throw.
         val launched = launchYouTubeMusic(
             context,
-            Intent(Intent.ACTION_VIEW, playbackUri).apply {
-                setPackage(TARGET_PACKAGE)
-            },
+            Intent(Intent.ACTION_VIEW, playbackUri).apply { setPackage(TARGET_PACKAGE) },
         )
-        if (launched) {
-            YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
-        }
+        if (launched) YouTubeMediaIdentityStore.rememberRequested(context, requestedVideoId)
         return launched
     }
 
-    private fun trySessionUriPlayback(
-        controller: MediaController,
-        uri: Uri,
-    ): Boolean {
+    private fun trySessionUriPlayback(controller: MediaController, uri: Uri): Boolean {
         val controls = controller.transportControls
         val actions = controller.playbackState?.actions ?: 0L
         val before = sessionSignature(controller)
@@ -371,10 +362,7 @@ object MediaSessionBridge {
         return false
     }
 
-    private fun awaitSessionChange(
-        controller: MediaController,
-        before: SessionSignature,
-    ): Boolean {
+    private fun awaitSessionChange(controller: MediaController, before: SessionSignature): Boolean {
         repeat(6) {
             Thread.sleep(140)
             if (sessionSignature(controller) != before) return true
@@ -396,19 +384,15 @@ object MediaSessionBridge {
         )
     }
 
-    private fun launchYouTubeMusic(
-        context: Context,
-        intent: Intent,
-    ): Boolean = runCatching {
+    private fun launchYouTubeMusic(context: Context, intent: Intent): Boolean = runCatching {
         context.startActivity(
-            intent.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            },
+            intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP) },
         )
         true
     }.getOrDefault(false)
 
     private const val MAX_BUNDLE_DEPTH = 3
+    private val MEDIA_TEXT_NOISE = Regex("[^\\p{L}\\p{N}]+")
     private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
     private val YOUTUBE_VIDEO_ID_HINT = Regex(
         "(?:[?&]v=|video(?:_|-)?id[=:/\\s]+)([A-Za-z0-9_-]{11})(?:[^A-Za-z0-9_-]|$)",
