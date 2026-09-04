@@ -49,9 +49,12 @@ internal object YouTubeMediaIdentityStore {
     }
 
     /**
-     * If YouTube Music keeps publishing exactly the previous video's id while the visible track
-     * title/artist already changed, that id is stale. Reject it before it can be rebound to the new
-     * signature and poison future reconnect restoration.
+     * Decide whether a raw MediaSession video id can be trusted for the visible track.
+     *
+     * Once an id has been proven for the current title/artist/duration signature, that binding is
+     * authoritative. This prevents a stale MediaSession field from replacing a freshly resolved id.
+     * When the visible track signature changes, the previous id is rejected while a genuinely new id
+     * is allowed through immediately.
      */
     fun acceptsCandidate(
         context: Context,
@@ -63,17 +66,22 @@ internal object YouTubeMediaIdentityStore {
         if (videoId.isBlank()) return false
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val storedVideoId = prefs.getString(KEY_VIDEO_ID, null) ?: return true
-        if (storedVideoId != videoId) return true
 
         val storedTitle = prefs.getString(KEY_TITLE, "").orEmpty()
         val storedArtist = prefs.getString(KEY_ARTIST, "").orEmpty()
         val storedDuration = prefs.getLong(KEY_DURATION_MS, 0L)
         if (storedTitle.isBlank() && storedArtist.isBlank()) return true
 
-        val titleMatches = storedTitle == normalize(title)
-        val artistMatches = storedArtist == normalize(artist)
-        val durationMatches = durationMatches(storedDuration, durationMs)
-        return titleMatches && artistMatches && durationMatches
+        val signatureMatches =
+            storedTitle == normalize(title) &&
+                storedArtist == normalize(artist) &&
+                durationMatches(storedDuration, durationMs)
+
+        return if (signatureMatches) {
+            videoId == storedVideoId
+        } else {
+            videoId != storedVideoId
+        }
     }
 
     fun resolve(
