@@ -9,6 +9,8 @@ import android.util.Log
 import dev.mediaremote.media.MediaSessionBridge
 import dev.mediaremote.media.MediaSnapshot
 import dev.mediaremote.media.RemoteMediaCommand
+import dev.mediaremote.media.YouTubeMediaIdentityStore
+import dev.mediaremote.media.YouTubeMusicTrackResolver
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -40,6 +42,7 @@ internal class YouTubeLoungeSession(
     private val rpcExecutor = Executors.newSingleThreadExecutor()
     private val sendExecutor = Executors.newSingleThreadExecutor()
     private val mediaSyncExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val identityResolverExecutor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private val stateSyncQueued = AtomicBoolean(false)
     private val stateSyncDirty = AtomicBoolean(false)
@@ -57,6 +60,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var rpcEstablished = false
     @Volatile private var senderConnected = false
     @Volatile private var pendingStateAid: Int? = null
+    @Volatile private var pendingIdentityKey: String? = null
     private val outgoingOffset = AtomicInteger(0)
     @Volatile private var currentVideoId: String? = null
     @Volatile private var currentListId: String? = null
@@ -94,7 +98,10 @@ internal class YouTubeLoungeSession(
         rpcEstablished = false
         senderConnected = false
         stateSyncDirty.set(false)
-        synchronized(this) { pendingStateAid = null }
+        synchronized(this) {
+            pendingStateAid = null
+            pendingIdentityKey = null
+        }
         mediaSyncFuture?.cancel(true)
         mediaSyncFuture = null
         rpcConnection?.disconnect()
@@ -105,6 +112,7 @@ internal class YouTubeLoungeSession(
         rpcExecutor.shutdownNow()
         sendExecutor.shutdownNow()
         mediaSyncExecutor.shutdownNow()
+        identityResolverExecutor.shutdownNow()
     }
 
     fun registerPairingCode(code: String): Boolean {
@@ -323,6 +331,7 @@ internal class YouTubeLoungeSession(
                 stateSyncDirty.set(false)
                 synchronized(this) {
                     pendingStateAid = null
+                    pendingIdentityKey = null
                     lastMediaSnapshot = null
                     clearCurrentVideoIdentity()
                 }
@@ -411,6 +420,9 @@ internal class YouTubeLoungeSession(
         val trackChanged = previous != null && trackIdentityChanged(previous, snapshot)
 
         syncCurrentVideo(snapshot, invalidateWhenMissing = trackChanged)
+        if (snapshot.mediaId.isBlank() && snapshot.title.isNotBlank()) {
+            scheduleIdentityResolution(snapshot)
+        }
 
         val mediaChanged = previous == null ||
             previous.mediaId != snapshot.mediaId ||
@@ -441,7 +453,7 @@ internal class YouTubeLoungeSession(
     private fun trackIdentityChanged(previous: MediaSnapshot, current: MediaSnapshot): Boolean {
         val previousId = previous.mediaId.takeIf(YOUTUBE_VIDEO_ID::matches)
         val currentId = current.mediaId.takeIf(YOUTUBE_VIDEO_ID::matches)
-        if (previousId != null && currentId != null) return previousId != currentId
+        if (previousId != null && currentId != null && previousId != currentId) return true
 
         val previousTitle = normalizeTrackText(previous.title)
         val currentTitle = normalizeTrackText(current.title)
@@ -456,6 +468,9 @@ internal class YouTubeLoungeSession(
 
     private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
         syncCurrentVideo(snapshot)
+        if (currentVideoId == null && snapshot.title.isNotBlank()) {
+            scheduleIdentityResolution(snapshot)
+        }
 
         val state = loungePlayerState(snapshot)
         val durationSeconds = snapshot.durationMs / 1000.0
@@ -481,6 +496,71 @@ internal class YouTubeLoungeSession(
         } else if (invalidateWhenMissing && snapshot.title.isNotBlank()) {
             clearCurrentVideoIdentity()
         }
+    }
+
+    /**
+     * Android sometimes gives us the new title/artist but no usable videoId. Resolve that identity
+     * off the media-sync thread, then re-check the live track before publishing it. This prevents a
+     * slow catalog response for track A from overwriting track B after a rapid skip.
+     */
+    private fun scheduleIdentityResolution(snapshot: MediaSnapshot) {
+        if (!running.get() || !senderConnected || snapshot.title.isBlank()) return
+        if (YOUTUBE_VIDEO_ID.matches(snapshot.mediaId)) return
+
+        val key = identityKey(snapshot)
+        synchronized(this) {
+            if (pendingIdentityKey == key) return
+            pendingIdentityKey = key
+        }
+
+        identityResolverExecutor.execute {
+            try {
+                val videoId = YouTubeMusicTrackResolver.resolve(snapshot) ?: return@execute
+                if (!running.get() || !senderConnected) return@execute
+
+                val fresh = MediaSessionBridge.snapshot(appContext)
+                if (!sameTrack(snapshot, fresh)) {
+                    Log.i(TAG, "Discarded catalog identity for superseded track: ${snapshot.title.take(80)}")
+                    return@execute
+                }
+
+                YouTubeMediaIdentityStore.rememberResolved(
+                    context = appContext,
+                    videoId = videoId,
+                    title = fresh.title,
+                    artist = fresh.artist,
+                    durationMs = fresh.durationMs,
+                )
+                val hydrated = MediaSessionBridge.snapshot(appContext)
+                if (hydrated.mediaId != videoId || !sameTrack(snapshot, hydrated)) return@execute
+
+                setCurrentVideo(videoId)
+                currentIndex = null
+                Log.i(TAG, "Resolved local track identity: ${hydrated.title.take(80)} -> $videoId")
+                sendNowPlaying(aid = null, snapshot = hydrated)
+                sendHasPreviousNextChanged(aid = null, snapshot = hydrated)
+                queueStateChange(aid = null)
+                synchronized(this) { lastMediaSnapshot = hydrated }
+            } finally {
+                synchronized(this) {
+                    if (pendingIdentityKey == key) pendingIdentityKey = null
+                }
+            }
+        }
+    }
+
+    private fun identityKey(snapshot: MediaSnapshot): String =
+        "${normalizeTrackText(snapshot.title)}|${normalizeTrackText(snapshot.artist)}|${snapshot.durationMs / 1000L}"
+
+    private fun sameTrack(expected: MediaSnapshot, current: MediaSnapshot): Boolean {
+        if (normalizeTrackText(expected.title) != normalizeTrackText(current.title)) return false
+        val expectedArtist = normalizeTrackText(expected.artist)
+        val currentArtist = normalizeTrackText(current.artist)
+        if (expectedArtist.isNotBlank() && currentArtist.isNotBlank() && expectedArtist != currentArtist) return false
+        if (expected.durationMs > 0L && current.durationMs > 0L) {
+            if (abs(expected.durationMs - current.durationMs) > TRACK_DURATION_TOLERANCE_MS) return false
+        }
+        return true
     }
 
     private fun queueStateChange(aid: Int?) {
@@ -648,6 +728,7 @@ internal class YouTubeLoungeSession(
         private const val URL_BIND = "$BASE/api/lounge/bc/bind"
         private const val MEDIA_SYNC_INTERVAL_MS = 1_000L
         private const val POSITION_CHANGE_THRESHOLD_MS = 400L
+        private const val TRACK_DURATION_TOLERANCE_MS = 2_500L
         private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
 
         private fun newCpn(): String = UUID.randomUUID()
