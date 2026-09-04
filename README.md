@@ -33,7 +33,7 @@
 1. YT Music Remoteをインストールする
 2. YouTube Musicをインストールし、起動しておく
 3. 通知へのアクセスを許可する
-4. 「Cast待受を開始」を押す
+4. YT Music Remoteを開く（Cast待受はアプリ起動時に自動開始）
 5. 操作側と同じLAN / Wi-Fiに接続する
 
 ### 操作端末

@@ -28,11 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import dev.mediaremote.media.MediaNotificationListener
 import dev.mediaremote.media.MediaSessionBridge
 import dev.mediaremote.media.MediaSnapshot
-import dev.mediaremote.network.RemoteServerService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,7 +73,6 @@ private fun PlaybackSetup() {
     val context = LocalContext.current
     var listenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
     var snapshot by remember { mutableStateOf(MediaSessionBridge.snapshot(context)) }
-    var receiverStarted by remember { mutableStateOf(false) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -116,25 +113,16 @@ private fun PlaybackSetup() {
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("2. YouTube Music Cast待受を開始", fontWeight = FontWeight.Bold)
+            Text("2. YouTube Music Cast待受", fontWeight = FontWeight.Bold)
             Text(
-                "操作側のYouTube Musicと同じLANに接続し、Cast一覧からこの端末を選べるようにします。",
+                "アプリ起動時に自動でCast待受を開始します。操作側のYouTube Musicと同じLANに接続し、Cast一覧からこの端末を選べます。",
                 style = MaterialTheme.typography.bodySmall,
             )
-            Button(
-                onClick = {
-                    ContextCompat.startForegroundService(
-                        context,
-                        Intent(context, RemoteServerService::class.java),
-                    )
-                    receiverStarted = true
-                    snapshot = MediaSessionBridge.snapshot(context)
-                },
-                enabled = listenerEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (receiverStarted) "Cast待受中" else "Cast待受を開始")
-            }
+            Text(
+                "✓ アプリ起動時に自動開始",
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 
