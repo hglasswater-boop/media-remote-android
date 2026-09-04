@@ -317,6 +317,7 @@ internal class YouTubeLoungeSession(
     }
 
     private fun handlePlaylistMessage(message: LoungeMessage, payload: JSONObject?) {
+        LoungePlaylistTrace.incoming(message.aid, message.name, payload)
         val isSetPlaylist = message.name == "setPlaylist"
         val hasListId = payload?.has("listId") == true
         val hasVideoIds = payload?.has("videoIds") == true
