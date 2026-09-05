@@ -420,7 +420,7 @@ object MediaSessionBridge {
             context.packageManager.getPackageInfo(TARGET_PACKAGE, 0).versionName
         }.getOrNull()
         val actions = controller?.playbackState?.actions ?: 0L
-        if (version != YouTubeMusicQueueMediaId.VERIFIED_VERSION || controller == null ||
+        if (!YouTubeMusicQueueMediaId.supportsVersion(version) || controller == null ||
             actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID == 0L
         ) {
             Log.w(TAG, "RQ handoff unavailable: ytmVersion=$version controller=${controller != null} " +

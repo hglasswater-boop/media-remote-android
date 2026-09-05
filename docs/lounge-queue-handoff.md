@@ -44,8 +44,9 @@ performed, and no local synthetic queue is installed.
 
 ## Compatibility and unresolved limitations
 
-- Internal format: enabled only on verified YTM version **9.34.52**, with an active
-  controller advertising `ACTION_PLAY_FROM_MEDIA_ID`. Other versions fail this
+- Internal format: enabled only on verified YTM versions **9.34.52** and
+  **9.35.54**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
+  Other versions fail this
   RQ command explicitly; ordinary PL/song URI behavior remains unchanged.
 - `ctt` and `params` remain stored in Lounge state but are **not forwarded** by
   this adapter. Their native field mappings are unverified. The successful probe
@@ -56,7 +57,11 @@ performed, and no local synthetic queue is installed.
 - Logs distinguish dispatch from acceptance, include IDs/index and presence flags
   only, and do not include encoded media IDs or opaque credential values.
 - Playback acceptance, following tracks, sender display, reconnection, and the
-  reported seek-to-end issue still require end-to-end testing after installation.
+  sender's playlist title still require end-to-end testing after installation.
+- For a fresh `setPlaylist`, the receiver now waits for the requested track to be
+  confirmed in MediaSession before applying `currentTime`, including zero. This
+  prevents the previous track's final position from being clamped to the new
+  track's duration and shown as an immediate seek to the end.
 - Empty-identity transition publications and ambiguous local catalog identities
   are separate issues; this change does not claim to fix them.
 

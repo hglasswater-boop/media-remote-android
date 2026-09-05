@@ -33,11 +33,10 @@ also echoes queue context in `nowPlaying`; it does not settle title behavior.
 Third-party source copies and device traces remain outside this repository.
 
 A fresh USB package check on 2026-09-05 found YouTube Music **9.35.54** on the
-playback phone (YT Music Remote **0.6.25**, build 1060). The existing native RQ
-adapter only enables playback on **9.34.52**. Its schema/transport compatibility
-must therefore also be checked before a successful playback retest; this patch
-does not widen that gate. Incoming diagnostics run before the playback dispatch
-and can still identify the source context when dispatch is rejected.
+playback phone. The 0.6.27 adapter enables the native RQ handoff on **9.34.52**
+and **9.35.54**, whose MediaItemInfo/WatchEndpoint parser layout matches the
+captured wire format. Incoming diagnostics still run before the playback
+dispatch and identify the source context without logging opaque values.
 
 A read-only metadata comparison using an old captured RQ, with and without a
 known original playlist in `mdxContext.mdxPlaybackSourceContext`, did not restore
@@ -59,10 +58,12 @@ and the sender's queue metadata before changing playback behavior. Do not
 substitute a user's playlist globally, relabel an RQ, or consider an HTTP 200 or
 a correct song title proof of playlist-name synchronization.
 
-The current patch expands diagnostics and corrects the documentation. It does
-not change playback routing or claim to restore the controller's playlist name.
+The current patch also applies a fresh selection's requested position after the
+new MediaSession track is confirmed, including `currentTime=0`; this prevents a
+previous track's final position from appearing as an immediate seek to the end.
+It does not claim to restore the controller's playlist name.
 
-Pre-publication validation: local `assembleDebug`, `testDebugUnitTest` (17 tests,
-no failures or errors), and `lintDebug` completed successfully. Version 0.6.26
-contains these diagnostics; the connected phone ran the existing signed build
-at the time of this investigation.
+Pre-publication validation: local `testDebugUnitTest` and `lintDebug` completed
+successfully. Version 0.6.27 contains the diagnostics and playback correction;
+end-to-end sender title and position verification still requires the signed APK
+on the connected phone.

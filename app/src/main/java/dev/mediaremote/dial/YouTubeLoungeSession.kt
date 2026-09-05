@@ -33,6 +33,14 @@ internal fun shouldResetSenderSelection(
     duplicatePendingSelection: Boolean,
 ): Boolean = isSetPlaylist && !duplicatePendingSelection
 
+/** Convert Lounge's seconds value to a safe MediaSession seek position. */
+internal fun selectionPositionMs(currentTimeSeconds: Double?): Long? {
+    if (currentTimeSeconds == null || !currentTimeSeconds.isFinite() || currentTimeSeconds < 0.0) {
+        return null
+    }
+    return (currentTimeSeconds * 1_000.0).toLong().coerceAtLeast(0L)
+}
+
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
  *
@@ -80,6 +88,9 @@ internal class YouTubeLoungeSession(
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
     @Volatile private var senderSelectionBaseline: MediaSnapshot? = null
     @Volatile private var senderSelectionCommandAccepted = false
+    @Volatile private var senderSelectionSeekVideoId: String? = null
+    @Volatile private var senderSelectionPositionMs: Long? = null
+    @Volatile private var senderSelectionSeekApplied = false
     @Volatile private var currentVideoConfirmed = false
     @Volatile private var currentCpn: String = newCpn()
     @Volatile private var lastMediaSnapshot: MediaSnapshot? = null
@@ -341,6 +352,13 @@ internal class YouTubeLoungeSession(
         val params = payload?.optString("params")?.takeIf { it.isNotBlank() }
         val currentTimeSeconds = payload?.optString("currentTime")?.toDoubleOrNull()
             ?: payload?.optDouble("currentTime", Double.NaN)?.takeUnless { it.isNaN() }
+        // The stock receiver treats a missing setPlaylist currentTime as zero. Keep that behavior so
+        // a new selection cannot inherit the previous track's final position.
+        val requestedPositionMs = if (isSetPlaylist && videoId != null) {
+            selectionPositionMs(currentTimeSeconds ?: 0.0)
+        } else {
+            null
+        }
 
         if (isSetPlaylist) {
             if (listId == null) {
@@ -396,6 +414,7 @@ internal class YouTubeLoungeSession(
         if (videoId != null && isSetPlaylist && !duplicatePendingSelection) {
             senderSelectionBaseline = MediaSessionBridge.snapshot(appContext)
             senderSelectionCommandAccepted = false
+            clearSenderSelectionSeek()
             setCurrentVideo(videoId)
             currentVideoConfirmed = false
             senderExpectedVideoId = videoId
@@ -407,6 +426,7 @@ internal class YouTubeLoungeSession(
             senderSelectionDeadlineMs = 0L
             senderSelectionBaseline = null
             senderSelectionCommandAccepted = false
+            clearSenderSelectionSeek()
         }
 
         Log.i(
@@ -433,33 +453,121 @@ internal class YouTubeLoungeSession(
                 // A rejected queue handoff must not seek the old song or report selection success.
                 // Expire the pending selection so the next snapshot can recover the actual track.
                 senderSelectionDeadlineMs = 0L
+                clearSenderSelectionSeek()
                 Log.w(TAG, "setPlaylist dispatch rejected: videoId=$videoId; seek skipped")
                 onStatus("YouTube Musicへの選曲指示を送信できませんでした")
                 requestMediaSync(message.aid, force = true, delayMs = 80)
                 return
             }
-            if (currentTimeSeconds != null && currentTimeSeconds > 1.0) {
+            if (requestedPositionMs != null) {
+                senderSelectionSeekVideoId = videoId
+                senderSelectionPositionMs = requestedPositionMs
+                senderSelectionSeekApplied = false
                 Log.i(
                     TAG,
-                    "setPlaylist seek scheduled: videoId=$videoId currentTime=$currentTimeSeconds",
+                    "setPlaylist seek scheduled: videoId=$videoId currentTime=$currentTimeSeconds " +
+                        "positionMs=$requestedPositionMs",
                 )
-                mediaSyncExecutor.schedule(
-                    {
-                        if (running.get()) {
-                            MediaSessionBridge.execute(
-                                appContext,
-                                RemoteMediaCommand.SeekTo((currentTimeSeconds * 1000.0).toLong()),
-                            )
-                        }
-                    },
-                    SET_PLAYLIST_SEEK_DELAY_MS,
-                    TimeUnit.MILLISECONDS,
-                )
+                schedulePendingSelectionSeek(videoId, requestedPositionMs)
             }
             onStatus("YouTube Musicから選曲を受信")
             requestMediaSync(message.aid, force = true, delayMs = 450)
         } else {
             requestMediaSync(message.aid, force = true, delayMs = 80)
+        }
+    }
+
+    /**
+     * Apply the sender's requested position only after the new MediaSession track is confirmed.
+     * YouTube Music can keep the previous track's final position while it installs the RQ queue;
+     * seeking before confirmation would then seek the old song. The short override window keeps a
+     * stale final position out of the first Lounge response while the seek command takes effect.
+     */
+    private fun schedulePendingSelectionSeek(
+        videoId: String,
+        positionMs: Long,
+        delayMs: Long = SET_PLAYLIST_SEEK_DELAY_MS,
+    ) {
+        if (!running.get()) return
+        runCatching {
+            mediaSyncExecutor.schedule(
+                {
+                    if (!running.get() ||
+                        senderSelectionSeekVideoId != videoId ||
+                        senderSelectionPositionMs != positionMs ||
+                        senderSelectionSeekApplied
+                    ) return@schedule
+
+                    val now = SystemClock.elapsedRealtime()
+                    if (!currentVideoConfirmed || currentVideoId != videoId) {
+                        if (now < senderSelectionDeadlineMs) {
+                            schedulePendingSelectionSeek(
+                                videoId = videoId,
+                                positionMs = positionMs,
+                                delayMs = SET_PLAYLIST_SEEK_RETRY_DELAY_MS,
+                            )
+                        } else {
+                            clearSenderSelectionSeek()
+                        }
+                        return@schedule
+                    }
+
+                    val live = MediaSessionBridge.snapshot(appContext)
+                    if (!live.available || live.title.isBlank()) {
+                        if (now < senderSelectionDeadlineMs) {
+                            schedulePendingSelectionSeek(
+                                videoId = videoId,
+                                positionMs = positionMs,
+                                delayMs = SET_PLAYLIST_SEEK_RETRY_DELAY_MS,
+                            )
+                        } else {
+                            clearSenderSelectionSeek()
+                        }
+                        return@schedule
+                    }
+
+                    val targetMs = if (live.durationMs > 0L) {
+                        positionMs.coerceIn(0L, live.durationMs)
+                    } else {
+                        positionMs.coerceAtLeast(0L)
+                    }
+                    if (MediaSessionBridge.execute(
+                            appContext,
+                            RemoteMediaCommand.SeekTo(targetMs),
+                        )
+                    ) {
+                        senderSelectionSeekApplied = true
+                        Log.i(
+                            TAG,
+                            "setPlaylist seek applied: videoId=$videoId positionMs=$targetMs",
+                        )
+                        requestMediaSync(aid = null, force = true, delayMs = 120)
+                        mediaSyncExecutor.schedule(
+                            {
+                                if (senderSelectionSeekVideoId == videoId &&
+                                    senderSelectionPositionMs == positionMs
+                                ) {
+                                    clearSenderSelectionSeek()
+                                }
+                            },
+                            SELECTION_POSITION_OVERRIDE_MS,
+                            TimeUnit.MILLISECONDS,
+                        )
+                    } else if (now < senderSelectionDeadlineMs) {
+                        schedulePendingSelectionSeek(
+                            videoId = videoId,
+                            positionMs = positionMs,
+                            delayMs = SET_PLAYLIST_SEEK_RETRY_DELAY_MS,
+                        )
+                    } else {
+                        clearSenderSelectionSeek()
+                    }
+                },
+                delayMs,
+                TimeUnit.MILLISECONDS,
+            )
+        }.onFailure {
+            if (running.get()) Log.w(TAG, "Unable to schedule pending selection seek", it)
         }
     }
 
@@ -654,6 +762,29 @@ internal class YouTubeLoungeSession(
 
     private fun normalizeTrackText(value: String): String = value.trim().lowercase()
 
+    private fun snapshotForOutgoing(snapshot: MediaSnapshot): MediaSnapshot {
+        val targetVideoId = senderSelectionSeekVideoId
+        val targetPositionMs = senderSelectionPositionMs
+        if (!currentVideoConfirmed || targetVideoId == null || targetPositionMs == null ||
+            currentVideoId != targetVideoId
+        ) {
+            return snapshot
+        }
+
+        val target = if (snapshot.durationMs > 0L) {
+            targetPositionMs.coerceIn(0L, snapshot.durationMs)
+        } else {
+            targetPositionMs.coerceAtLeast(0L)
+        }
+        // Only replace a clearly stale end position. A live MediaSession position that has already
+        // advanced from the requested start should continue to drive the sender's clock.
+        return if (snapshot.positionMs > target + SELECTION_POSITION_STALE_THRESHOLD_MS) {
+            snapshot.copy(positionMs = target)
+        } else {
+            snapshot
+        }
+    }
+
     private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
         syncCurrentVideo(snapshot, invalidateWhenMissing = true)
         if (!currentVideoConfirmed && snapshot.title.isNotBlank()) {
@@ -681,10 +812,11 @@ internal class YouTubeLoungeSession(
             return
         }
 
-        val state = loungePlayerState(snapshot)
-        val durationSeconds = snapshot.durationMs / 1000.0
+        val outgoingSnapshot = snapshotForOutgoing(snapshot)
+        val state = loungePlayerState(outgoingSnapshot)
+        val durationSeconds = outgoingSnapshot.durationMs / 1000.0
         val payload = linkedMapOf<String, Any>(
-            "currentTime" to (snapshot.positionMs / 1000.0),
+            "currentTime" to (outgoingSnapshot.positionMs / 1000.0),
             "duration" to durationSeconds,
             "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
             "videoId" to videoId,
@@ -705,7 +837,8 @@ internal class YouTubeLoungeSession(
         Log.i(
             TAG,
             "nowPlaying queued: videoId=$videoId listId=$payloadListId " +
-                "index=$payloadIndex title=${snapshot.title.take(80)}",
+                "index=$payloadIndex title=${outgoingSnapshot.title.take(80)} " +
+                "positionMs=${outgoingSnapshot.positionMs}",
         )
         sendMessage(aid, "nowPlaying", payload)
     }
@@ -722,6 +855,7 @@ internal class YouTubeLoungeSession(
             senderSelectionDeadlineMs = 0L
             senderSelectionBaseline = null
             senderSelectionCommandAccepted = false
+            clearSenderSelectionSeek()
             if (!currentVideoConfirmed) clearCurrentVideoIdentity(clearIndex = false)
         }
 
@@ -1046,11 +1180,12 @@ internal class YouTubeLoungeSession(
     }
 
     private fun stateChangePayload(snapshot: MediaSnapshot): Map<String, Any> {
-        val state = loungePlayerState(snapshot)
-        val durationSeconds = snapshot.durationMs / 1000.0
+        val outgoingSnapshot = snapshotForOutgoing(snapshot)
+        val state = loungePlayerState(outgoingSnapshot)
+        val durationSeconds = outgoingSnapshot.durationMs / 1000.0
         val payload = linkedMapOf<String, Any>(
             "state" to state,
-            "currentTime" to (snapshot.positionMs / 1000.0),
+            "currentTime" to (outgoingSnapshot.positionMs / 1000.0),
             "duration" to durationSeconds,
             "loadedTime" to if (state == 1 || state == 2 || state == 3) durationSeconds else 0,
             "seekableStartTime" to 0,
@@ -1180,6 +1315,13 @@ internal class YouTubeLoungeSession(
     }
 
     @Synchronized
+    private fun clearSenderSelectionSeek() {
+        senderSelectionSeekVideoId = null
+        senderSelectionPositionMs = null
+        senderSelectionSeekApplied = false
+    }
+
+    @Synchronized
     private fun clearPlaybackContext() {
         clearCurrentVideoIdentity()
         clearPlaylistContext()
@@ -1187,6 +1329,7 @@ internal class YouTubeLoungeSession(
         senderSelectionDeadlineMs = 0L
         senderSelectionBaseline = null
         senderSelectionCommandAccepted = false
+        clearSenderSelectionSeek()
     }
 
     private fun buildMusicUrl(
@@ -1231,7 +1374,10 @@ internal class YouTubeLoungeSession(
         private const val POSITION_CHANGE_THRESHOLD_MS = 400L
         private const val TRACK_DURATION_TOLERANCE_MS = 2_500L
         private const val SENDER_SELECTION_GUARD_MS = 4_000L
-        private const val SET_PLAYLIST_SEEK_DELAY_MS = 650L
+        private const val SET_PLAYLIST_SEEK_DELAY_MS = 150L
+        private const val SET_PLAYLIST_SEEK_RETRY_DELAY_MS = 150L
+        private const val SELECTION_POSITION_OVERRIDE_MS = 1_500L
+        private const val SELECTION_POSITION_STALE_THRESHOLD_MS = 1_000L
         private const val IDENTITY_RESOLUTION_ATTEMPTS = 3
         private val IDENTITY_RETRY_DELAYS_MS = longArrayOf(500L, 1_000L)
         private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
