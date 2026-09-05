@@ -52,4 +52,49 @@ class LoungePlaylistTraceTest {
         assertFalse(output.getBoolean("payloadPresent"))
         assertFalse(output.has("fields"))
     }
+
+    @Test fun capturesOriginalPlaylistFromStringEntryWithoutOpaqueMetadata() {
+        val entry = JSONObject()
+            .put("videoId", "abcdefghijk")
+            .put("sourceContainerPlaylistId", "PLoriginal")
+            .put("serializedMdxMetadata", "must-stay-private")
+            .put("unknown", JSONObject().put("token", "nested-secret"))
+        val input = JSONObject().put("listId", "RQqueue").put("videoEntry", entry.toString())
+        val fields = playlistTracePayload(input).getJSONObject("fields")
+        assertEquals("RQqueue", fields.getString("listId"))
+        val tracedEntry = JSONObject(fields.getString("videoEntry"))
+        assertEquals("abcdefghijk", tracedEntry.getString("videoId"))
+        assertEquals("PLoriginal", tracedEntry.getString("sourceContainerPlaylistId"))
+        assertTrue(tracedEntry.getJSONArray("keys").toString().contains("serializedMdxMetadata"))
+        assertFalse(fields.toString().contains("must-stay-private"))
+        assertFalse(fields.toString().contains("nested-secret"))
+        assertEquals("must-stay-private", entry.getString("serializedMdxMetadata"))
+    }
+
+    @Test fun distinguishesMissingNullAndMalformedSourceEntries() {
+        val input = JSONObject()
+            .put("videoEntries", JSONArray().put(JSONObject().put("videoId", "abcdefghijk"))
+                .put(JSONObject().put("sourceContainerPlaylistId", JSONObject.NULL))
+                .put("malformed-private-value"))
+            .put("videoEntry", JSONObject.NULL)
+        val fields = playlistTracePayload(input).getJSONObject("fields")
+        val entries = fields.getJSONArray("videoEntries")
+        assertTrue(fields.isNull("videoEntry"))
+        assertFalse(entries.getJSONObject(0).has("sourceContainerPlaylistId"))
+        assertTrue(entries.getJSONObject(1).isNull("sourceContainerPlaylistId"))
+        assertTrue(entries.getJSONObject(2).getBoolean("unparsed"))
+        assertFalse(fields.toString().contains("malformed-private-value"))
+    }
+
+    @Test fun handlesStringArraysAndDoesNotLeakNestedIdentityObjects() {
+        val entry = JSONObject()
+            .put("videoId", "abcdefghijk")
+            .put("sourceContainerPlaylistId", JSONObject().put("token", "nested-secret"))
+        val input = JSONObject().put("videoEntries", JSONArray().put(entry).toString())
+        val fields = playlistTracePayload(input).getJSONObject("fields")
+        val tracedEntry = JSONArray(fields.getString("videoEntries")).getJSONObject(0)
+        assertEquals("abcdefghijk", tracedEntry.getString("videoId"))
+        assertTrue(tracedEntry.getJSONObject("sourceContainerPlaylistId").getBoolean("unparsed"))
+        assertFalse(fields.toString().contains("nested-secret"))
+    }
 }

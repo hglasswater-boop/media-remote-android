@@ -18,7 +18,7 @@ adb shell setprop log.tag.LoungePlaylistTrace INFO
 
 The trace contains raw `videoId`, `listId`, `currentIndex`, `videoIds`, `ctt`,
 `params`, and `currentTime`, plus the names (not values) of other payload fields.
-Missing fields, explicit nulls, and original JSON types are preserved.
+Missing fields, explicit nulls, and original JSON types are preserved for these fields.
 RPC envelopes and authentication/pairing values outside that allowlist are not dumped.
 Treat `ctt` / `params` as potentially sensitive opaque data: keep captures local and
 do not attach them to public issues or commits without reviewing/redacting them.
@@ -33,3 +33,18 @@ Compare a sender selection with the original playlist link. An `RQ` identifier i
 not automatically interchangeable with a shareable `PL` identifier. Success from
 `playFromUri` alone is also insufficient: verify the resulting song and displayed
 playlist context independently.
+
+## Original playlist identity diagnostics (0.6.26, 2026-09-05)
+
+The trace now also inspects `videoEntry` and `videoEntries`. Entries can be JSON
+objects or JSON encoded strings, and arrays can likewise be encoded as strings.
+Only `videoId`, `sourceContainerPlaylistId`, and the names of entry keys are kept.
+Unknown values, including `serializedMdxMetadata`, are omitted. Explicit nulls
+remain null. Malformed entries and unexpected nested identity values are replaced
+with a type/length description; their contents are not logged.
+
+This remains an opt-in diagnostic change, not a playback or display fix. Previous
+captures recorded the presence of `videoEntry` but not its contents. They cannot
+establish whether a source playlist ID was supplied for the reported selection.
+See [the sender-title investigation](lounge-playlist-title.md) for the evidence
+and the next device check.
