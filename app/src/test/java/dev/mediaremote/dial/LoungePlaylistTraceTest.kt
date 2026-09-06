@@ -6,6 +6,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LoungePlaylistTraceTest {
+    @Test fun sourceContextReplayRequiresSeparateOptInAndOnlyCapturesSelectedEntry() {
+        val entry = JSONObject().put("videoId", "abcdefghijk")
+            .put("serializedMdxMetadata", "opaque-source")
+            .put("unknown", "unrelated-secret")
+        val input = JSONObject().put("videoEntry", entry.toString())
+            .put("videoEntries", JSONArray().put(entry))
+            .put("playerParams", "opaque-player").put("listCtt", "opaque-list-token")
+            .put("loungeToken", "pairing-secret")
+        val defaultTrace = playlistTracePayload(input).toString()
+        listOf("opaque-source", "opaque-player", "opaque-list-token").forEach {
+            assertFalse(defaultTrace.contains(it))
+        }
+        val fields = playlistTracePayload(input, includeOpaqueSourceContext = true).getJSONObject("fields")
+        assertEquals("opaque-source", JSONObject(fields.getString("videoEntry")).getString("serializedMdxMetadata"))
+        assertEquals("opaque-player", fields.getString("playerParams"))
+        assertEquals("opaque-list-token", fields.getString("listCtt"))
+        assertFalse(fields.getJSONArray("videoEntries").toString().contains("opaque-source"))
+        assertFalse(fields.toString().contains("unrelated-secret"))
+        assertFalse(fields.toString().contains("pairing-secret"))
+    }
+
     @Test fun duplicatePendingSetPlaylistKeepsSenderSelectionGuard() {
         assertFalse(shouldResetSenderSelection(isSetPlaylist = true, duplicatePendingSelection = true))
         assertTrue(shouldResetSenderSelection(isSetPlaylist = true, duplicatePendingSelection = false))

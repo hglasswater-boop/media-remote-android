@@ -15,7 +15,10 @@ internal object LoungePlaylistTrace {
         if (!Log.isLoggable(TAG, Log.DEBUG)) return
         runCatching {
             val traceId = sequence.incrementAndGet()
-            val text = playlistTracePayload(payload).toString()
+            val text = playlistTracePayload(
+                payload,
+                includeOpaqueSourceContext = Log.isLoggable("LoungeSourceTrace", Log.DEBUG),
+            ).toString()
             val chunks = text.take(65_536).chunked(800)
             chunks.forEachIndexed { index, chunk ->
                 Log.d(
@@ -30,7 +33,10 @@ internal object LoungePlaylistTrace {
 }
 
 /** Preserve absent vs null and raw types; only playback-context values are included. */
-internal fun playlistTracePayload(payload: JSONObject?): JSONObject = JSONObject().apply {
+internal fun playlistTracePayload(
+    payload: JSONObject?,
+    includeOpaqueSourceContext: Boolean = false,
+): JSONObject = JSONObject().apply {
     put("payloadPresent", payload != null)
     if (payload == null) return@apply
     put("keys", JSONArray(payload.keys().asSequence().toList().sorted()))
@@ -38,16 +44,27 @@ internal fun playlistTracePayload(payload: JSONObject?): JSONObject = JSONObject
     listOf("videoId", "listId", "currentIndex", "videoIds", "ctt", "params", "currentTime")
         .filter(payload::has)
         .forEach { key -> fields.put(key, payload.opt(key)) }
+    // A separate USB-only opt-in is required for replaying source context to YouTube.
+    // Treat this trace as credential-bearing; never attach it to issues or publish it.
+    if (includeOpaqueSourceContext) {
+        listOf("playerParams", "listCtt").filter(payload::has).forEach { key ->
+            val value = payload.opt(key)
+            fields.put(key, if (value is String || value === JSONObject.NULL) value else entryTraceShape(value))
+        }
+    }
     // Newer senders carry the original playlist separately from listId (the Lounge queue).
     // Do not dump the whole entry: it can also contain opaque serialized MDX metadata.
     listOf("videoEntry", "videoEntries")
         .filter(payload::has)
-        .forEach { key -> fields.put(key, playlistEntryTrace(payload.opt(key), array = key == "videoEntries")) }
+        .forEach { key -> fields.put(key, playlistEntryTrace(
+            payload.opt(key), array = key == "videoEntries",
+            includeOpaqueSourceContext = includeOpaqueSourceContext && key == "videoEntry",
+        )) }
     put("fields", fields)
 }
 
 /** Retain wire shape and only the two known identity fields inside an entry. */
-private fun playlistEntryTrace(raw: Any?, array: Boolean): Any {
+private fun playlistEntryTrace(raw: Any?, array: Boolean, includeOpaqueSourceContext: Boolean = false): Any {
     if (raw == null || raw === JSONObject.NULL) return JSONObject.NULL
     val parsed = if (raw is String) {
         runCatching { if (array) JSONArray(raw) else JSONObject(raw) }.getOrNull()
@@ -64,7 +81,8 @@ private fun playlistEntryTrace(raw: Any?, array: Boolean): Any {
     if (!array && parsed is JSONObject) {
         val entry = JSONObject()
         entry.put("keys", JSONArray(parsed.keys().asSequence().toList().sorted()))
-        listOf("videoId", "sourceContainerPlaylistId")
+        (listOf("videoId", "sourceContainerPlaylistId") +
+            if (includeOpaqueSourceContext) listOf("serializedMdxMetadata") else emptyList())
             .filter(parsed::has)
             .forEach { key ->
                 val value = parsed.opt(key)

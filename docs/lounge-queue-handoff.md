@@ -161,6 +161,24 @@ each progress tick or on an unchanged sparse update. Preserve repeated video IDs
 sender's absolute indexes remain valid. The header refresh remains a device-validation
 candidate until the sender screen is checked after installing this build.
 
+### Source-context diagnosis (0.6.31)
+
+The user's 0.6.30 retest still showed Favorite Songs for Attempt from メロウ.
+Do not treat the firstVideoId change as a fix for the header. In the inspected
+9.35.54 client, remote queue synchronization fetches the items, and its completion
+skips playback navigation when the RQ ID equals the current playlist ID.
+
+The earlier trace omitted playerParams and serializedMdxMetadata, which the stock
+TV receiver carries into its WatchEndpoint source context. Therefore the earlier
+/next probes did not reproduce the complete request and cannot rule out a title
+in that context. 0.6.31 changes diagnostics only, not playback behavior. During
+bounded USB diagnosis, enabling both LoungePlaylistTrace and LoungeSourceTrace
+at DEBUG records the selected entry's opaque metadata, playerParams, and listCtt
+for an authorized read-only YouTube query. Both are off by default. Do not log
+opaque context for all queue entries, publish the trace, or send it elsewhere.
+Reset both tags to INFO when capture ends. A new selection is needed because the
+missing fields cannot be recovered from the previous allowlisted trace.
+
 Build/test/lint. Update with the same signing certificate (do not clear app data).
 Capture the documented diagnostic tags. Reconnect the sender and select a new
 song from Favorite Songs, recording title/artist. Correlate incoming IDs/index,
