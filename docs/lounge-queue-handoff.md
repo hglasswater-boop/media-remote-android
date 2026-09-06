@@ -107,6 +107,32 @@ over a stale title-based catalog cache. It is not a title-only heuristic.
 
 ## Validation procedure
 
+### Questions identity regression (0.6.28)
+
+On 2026-09-06 / YTM 9.35.54, the sender requested `mO5kvldneUM` at index 22.
+The receiver confirmed that selection on the transition to Questions, then immediately
+deferred nowPlaying with an empty mediaId. Catalog fallback published `7NR7khHSGfM`
+without playlist context, and the sender returned a 48-item queue instead of 47.
+
+The publication path reconciled the same snapshot twice, before committing the new
+baseline. The second pass invalidated the identity confirmed by the first pass.
+Reconcile once before publication; route getNowPlaying through that same synchronized
+path, and serialize selection updates and identity reconciliation with publication.
+
+Device regression check: select the white-cover Questions from a fresh sender queue;
+verify the first and subsequent nowPlaying keep `mO5kvldneUM`, the received list/index,
+and a position near zero. Verify the sender artwork and absence of an inserted Questions
+separately. Existing queues may already contain an item inserted by older builds.
+
+`diagnostics/QuestionsIdentityRegression.java` exercises the actual APK's reconciliation
+and publication methods with the captured empty-mediaId transition. It uses in-memory
+preferences and an inactive session, so it does not touch playback, app data, or the network.
+Compile with javac against android.jar, dex the resulting classes with d8, and push the
+dex plus the APK to `/data/local/tmp`. Run with
+`CLASSPATH=/data/local/tmp/questions-regression.dex:/data/local/tmp/questions-after.apk app_process /system/bin QuestionsIdentityRegression`.
+On Sony 802SO, 0.6.27 b1062 fails with "Publication discarded the selected Questions
+identity"; the 0.6.28 debug APK passes. This checks publication, not sender UI rendering.
+
 Build/test/lint. Update with the same signing certificate (do not clear app data).
 Capture the documented diagnostic tags. Reconnect the sender and select a new
 song from Favorite Songs, recording title/artist. Correlate incoming IDs/index,

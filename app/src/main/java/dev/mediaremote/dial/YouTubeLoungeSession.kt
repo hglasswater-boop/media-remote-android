@@ -323,9 +323,7 @@ internal class YouTubeLoungeSession(
                 }
             }
             "getNowPlaying" -> {
-                val snapshot = MediaSessionBridge.snapshot(appContext)
-                sendNowPlaying(message.aid, snapshot)
-                queueStateChange(message.aid)
+                requestMediaSync(message.aid, force = true, delayMs = 0)
             }
             "getVolume" -> sendVolume(message.aid)
             "getPlaylist" -> sendPlaylist(message.aid)
@@ -334,6 +332,7 @@ internal class YouTubeLoungeSession(
         }
     }
 
+    @Synchronized
     private fun handlePlaylistMessage(message: LoungeMessage, payload: JSONObject?) {
         LoungePlaylistTrace.incoming(message.aid, message.name, payload)
         val isSetPlaylist = message.name == "setPlaylist"
@@ -785,8 +784,11 @@ internal class YouTubeLoungeSession(
         }
     }
 
-    private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot = MediaSessionBridge.snapshot(appContext)) {
-        syncCurrentVideo(snapshot, invalidateWhenMissing = true)
+    // Callers reconcile identity once before publishing. Repeating syncCurrentVideo here with the
+    // same pre-confirmation snapshot clears a just-confirmed sender selection: its raw mediaId is
+    // still empty and lastMediaSnapshot still describes the previous song. Catalog fallback then
+    // publishes another edition of the same title, causing the sender to insert a duplicate item.
+    private fun sendNowPlaying(aid: Int?, snapshot: MediaSnapshot) {
         if (!currentVideoConfirmed && snapshot.title.isNotBlank()) {
             scheduleIdentityResolution(snapshot)
         }
@@ -843,6 +845,7 @@ internal class YouTubeLoungeSession(
         sendMessage(aid, "nowPlaying", payload)
     }
 
+    @Synchronized
     private fun syncCurrentVideo(
         snapshot: MediaSnapshot,
         invalidateWhenMissing: Boolean = false,
