@@ -41,6 +41,24 @@ internal fun selectionPositionMs(currentTimeSeconds: Double?): Long? {
     return (currentTimeSeconds * 1_000.0).toLong().coerceAtLeast(0L)
 }
 
+/** A same-track selection may restart playback without replacing any queue item IDs. */
+internal fun selectionRestartObserved(
+    baseline: MediaSnapshot,
+    current: MediaSnapshot,
+    requestedPositionMs: Long?,
+): Boolean {
+    if (requestedPositionMs == null || !current.available || current.title.isBlank()) return false
+    if (baseline.positionUpdatedAtMs <= 0L ||
+        current.positionUpdatedAtMs <= baseline.positionUpdatedAtMs
+    ) return false
+    if (current.playbackState != PlaybackState.STATE_PLAYING &&
+        current.playbackState != PlaybackState.STATE_PAUSED
+    ) return false
+    // Elapsed clock progression alone cannot acknowledge a selection; require a fresh player
+    // update at the requested position. Buffering snapshots can still describe the old item.
+    return abs(current.positionMs - requestedPositionMs) <= 1_500L
+}
+
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
  *
@@ -84,6 +102,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentIndex: Int? = null
     @Volatile private var currentCtt: String? = null
     @Volatile private var currentParams: String? = null
+    @Volatile private var pendingPlaylistNotification = false
     @Volatile private var senderExpectedVideoId: String? = null
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
     @Volatile private var senderSelectionBaseline: MediaSnapshot? = null
@@ -335,6 +354,8 @@ internal class YouTubeLoungeSession(
     @Synchronized
     private fun handlePlaylistMessage(message: LoungeMessage, payload: JSONObject?) {
         LoungePlaylistTrace.incoming(message.aid, message.name, payload)
+        val previousListId = currentListId
+        val previousVideoIds = currentVideoIds
         val isSetPlaylist = message.name == "setPlaylist"
         val hasListId = payload?.has("listId") == true
         val hasVideoIds = payload?.has("videoIds") == true
@@ -409,6 +430,10 @@ internal class YouTubeLoungeSession(
                 videoId != null &&
                 videoId == senderExpectedVideoId &&
                 SystemClock.elapsedRealtime() <= senderSelectionDeadlineMs
+
+        if ((isSetPlaylist && !duplicatePendingSelection) ||
+            previousListId != currentListId || previousVideoIds != currentVideoIds
+        ) pendingPlaylistNotification = true
 
         if (videoId != null && isSetPlaylist && !duplicatePendingSelection) {
             senderSelectionBaseline = MediaSessionBridge.snapshot(appContext)
@@ -581,7 +606,7 @@ internal class YouTubeLoungeSession(
                 .map(String::trim)
                 .filter(YOUTUBE_VIDEO_ID::matches)
         }
-        return raw.distinct()
+        return raw
     }
 
     private fun handleLoungeStatus(aid: Int, payload: JSONObject?) {
@@ -668,6 +693,7 @@ internal class YouTubeLoungeSession(
         val snapshot = MediaSessionBridge.snapshot(appContext)
         syncCurrentVideo(snapshot)
         sendHasPreviousNextChanged(aid, snapshot)
+        sendPendingPlaylistChange(aid)
         sendNowPlaying(aid, snapshot)
         if (currentVideoConfirmed) queueStateChange(aid)
         lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
@@ -714,6 +740,7 @@ internal class YouTubeLoungeSession(
         // A track transition must publish its identity before a position-only state update. If
         // MediaSession has not exposed a usable id yet, hold both messages until the resolver can
         // identify the new track; otherwise the sender advances the old song's seek bar.
+        sendPendingPlaylistChange(aid)
         if (force || mediaChanged || stateChanged) sendNowPlaying(aid, snapshot)
         if (force || stateChanged || positionChanged) {
             if (currentVideoConfirmed) queueStateChange(aid)
@@ -947,6 +974,7 @@ internal class YouTubeLoungeSession(
         if (!snapshot.available || snapshot.title.isBlank()) return false
         val baseline = senderSelectionBaseline ?: previousSnapshot ?: return false
         if (trackIdentityChanged(baseline, snapshot)) return true
+        if (selectionRestartObserved(baseline, snapshot, senderSelectionPositionMs)) return true
         return baseline.title.isBlank() && baseline.mediaId.isBlank() && snapshot.queueSize > 0
     }
 
@@ -1096,6 +1124,7 @@ internal class YouTubeLoungeSession(
                                     TAG,
                                     "Resolved local track identity: ${hydrated.title.take(80)} -> $videoId",
                                 )
+                                sendPendingPlaylistChange(aid = null)
                                 sendNowPlaying(aid = null, snapshot = hydrated)
                                 sendHasPreviousNextChanged(aid = null, snapshot = hydrated)
                                 if (currentVideoConfirmed) queueStateChange(aid = null)
@@ -1227,14 +1256,25 @@ internal class YouTubeLoungeSession(
         else -> -1
     }
 
-    private fun sendPlaylist(aid: Int) {
-        val payload = linkedMapOf<String, Any>()
-        currentListId?.let { payload["listId"] = it }
-        if (currentVideoIds.isNotEmpty()) payload["videoIds"] = currentVideoIds.joinToString(",")
-        currentVideoId?.let { payload["videoId"] = it }
-        currentIndex?.let { payload["currentIndex"] = it }
-        currentCtt?.let { payload["ctt"] = it }
-        currentParams?.let { payload["params"] = it }
+    @Synchronized
+    private fun sendPendingPlaylistChange(aid: Int?) {
+        val videoId = currentVideoId ?: return
+        if (!pendingPlaylistNotification || !currentVideoConfirmed ||
+            !playlistContextMatches(videoId)
+        ) return
+        pendingPlaylistNotification = false
+        sendPlaylist(aid)
+    }
+
+    @Synchronized
+    private fun sendPlaylist(aid: Int?) {
+        val payload = loungePlaylistPayload(
+            currentListId, currentVideoIds, currentVideoId, currentIndex, currentCtt, currentParams,
+        )
+        Log.i(TAG, "playlistModified queued: listId=${currentListId ?: "<none>"} " +
+            "firstVideoId=${payload["firstVideoId"] ?: "<none>"} " +
+            "videoId=${currentVideoId ?: "<none>"} index=${currentIndex ?: -1} " +
+            "videoIds=${currentVideoIds.size}")
         sendMessage(aid, "playlistModified", payload)
     }
 
@@ -1310,6 +1350,7 @@ internal class YouTubeLoungeSession(
 
     @Synchronized
     private fun clearPlaylistContext() {
+        pendingPlaylistNotification = false
         currentListId = null
         currentVideoIds = emptyList()
         currentIndex = null

@@ -45,16 +45,20 @@ public final class QuestionsIdentityRegression {
     }
 
     private static Object snapshot(Class<?> type, String title, String artist, long duration) throws Exception {
-        return type.getConstructor(boolean.class, String.class, String.class, String.class,
-            String.class, boolean.class, int.class, float.class, long.class, long.class,
-            long.class, String.class, int.class, int.class, java.util.List.class)
-            .newInstance(true, "", title, artist, "", true, 3, 1f, 0L, 0L, duration,
-                "com.google.android.apps.youtube.music", -1, 0, java.util.Collections.emptyList());
+        for (java.lang.reflect.Constructor<?> constructor : type.getConstructors()) {
+            int count = constructor.getParameterTypes().length;
+            if (count != 15 && count != 16) continue;
+            Object[] values = { true, "", title, artist, "", true, 3, 1f, 0L, 0L, duration,
+                "com.google.android.apps.youtube.music", -1, 0, java.util.Collections.emptyList(), 100_000L };
+            return constructor.newInstance(java.util.Arrays.copyOf(values, count));
+        }
+        throw new AssertionError("Unrecognized MediaSnapshot constructor");
     }
 
     public static void main(String[] args) throws Exception {
         try {
-            runRegression();
+            runRegression(false);
+            runRegression(true);
             System.exit(0);
         } catch (Throwable error) {
             error.printStackTrace(System.out);
@@ -62,7 +66,7 @@ public final class QuestionsIdentityRegression {
         }
     }
 
-    private static void runRegression() throws Exception {
+    private static void runRegression(boolean sameTrack) throws Exception {
         SharedPreferences prefs = preferences();
         Context context = new ContextWrapper(null) {
             @Override public Context getApplicationContext() { return this; }
@@ -77,6 +81,16 @@ public final class QuestionsIdentityRegression {
         Class<?> snapshotType = Class.forName("dev.mediaremote.media.MediaSnapshot");
         Object baseline = snapshot(snapshotType, "On Your Side", "", 235000L);
         Object selected = snapshot(snapshotType, "Questions", "Far Caspian", 221000L);
+        if (sameTrack) {
+            baseline = snapshot(snapshotType, "Questions", "Far Caspian", 221000L);
+            field(baseline, "positionMs", 16448L);
+            field(baseline, "mediaId", "cDSzXrgc7YU");
+            field(selected, "mediaId", "cDSzXrgc7YU");
+            field(selected, "positionMs", 250L);
+            try { field(selected, "positionUpdatedAtMs", 116500L); }
+            catch (NoSuchFieldException ignored) { /* Run against the old APK too. */ }
+            field(session, "senderSelectionPositionMs", 0L);
+        }
         field(session, "lastMediaSnapshot", baseline);
         field(session, "senderSelectionBaseline", baseline);
         field(session, "senderExpectedVideoId", EXPECTED);
@@ -91,7 +105,7 @@ public final class QuestionsIdentityRegression {
         reconcile.setAccessible(true);
         reconcile.invoke(session, selected, true, baseline);
         if (!Boolean.TRUE.equals(field(session, "currentVideoConfirmed")))
-            throw new AssertionError("Selection was not confirmed before publication");
+            throw new AssertionError("Selection was not confirmed before publication; sameTrack=" + sameTrack);
 
         Method publish = sessionType.getDeclaredMethod("sendNowPlaying", Integer.class, snapshotType);
         publish.setAccessible(true);
@@ -102,6 +116,6 @@ public final class QuestionsIdentityRegression {
         if (!"RQregression".equals(field(session, "currentListId")) ||
             !Integer.valueOf(0).equals(field(session, "currentIndex")))
             throw new AssertionError("Publication discarded playlist context");
-        System.out.println("PASS: publication retains selected Questions ID and playlist context");
+        System.out.println("PASS: publication retains selected Questions ID and playlist context; sameTrack=" + sameTrack);
     }
 }

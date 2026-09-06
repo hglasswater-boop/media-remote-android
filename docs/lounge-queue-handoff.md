@@ -133,6 +133,34 @@ dex plus the APK to `/data/local/tmp`. Run with
 On Sony 802SO, 0.6.27 b1062 fails with "Publication discarded the selected Questions
 identity"; the 0.6.28 debug APK passes. This checks publication, not sender UI rendering.
 
+### Same-track restart (0.6.29)
+
+The 0.6.28 device retest exposed a second path: selecting Questions while Questions
+was already playing reset playback from about 16 seconds to zero without changing
+the title or queue IDs. The four-second guard expired and catalog search again
+published `cDSzXrgc7YU`. Include the player's monotonic position-update timestamp
+in snapshots and recognize a fresh playing/paused update near the requested position.
+An unchanged timestamp, normal progress, or a buffering snapshot cannot acknowledge
+this restart. The diagnostic also exercises this same-track case with a stale cached
+mediaId; unit tests cover stale timestamps, buffering, progress, and nonzero positions.
+
+### Same-RQ playlist replacement (0.6.30)
+
+The user selected Attempt (`qnqBSZ_m6-4`) from メロウ, while the sender header remained
+Favorite Songs. The captured setPlaylist replaced the contents with 57 videos but reused
+the same RQ ID. Its videoEntry contained serializedMdxMetadata and no sourceContainerPlaylistId.
+Both anonymous and credentialed TV /next returned the generic title キュー; the credentialed
+response's expanded video list exactly matched all 57 received IDs. Do not substitute a
+guessed original PL ID or hard-code the display name.
+
+Inspection of YTM 9.35.54's playlistModified handler found a concrete missing field:
+when videoId is nonempty and firstVideoId is empty, the handler skips its playlist-change
+event. Supply firstVideoId separately from the current videoId, and proactively send the
+notification after a new selection or changed queue has been confirmed. Do not notify on
+each progress tick or on an unchanged sparse update. Preserve repeated video IDs so the
+sender's absolute indexes remain valid. The header refresh remains a device-validation
+candidate until the sender screen is checked after installing this build.
+
 Build/test/lint. Update with the same signing certificate (do not clear app data).
 Capture the documented diagnostic tags. Reconnect the sender and select a new
 song from Favorite Songs, recording title/artist. Correlate incoming IDs/index,

@@ -32,6 +32,8 @@ data class MediaSnapshot(
     val queueSize: Int = 0,
     /** The MediaSession queue window, in the order exposed by the player. */
     val queueWindow: List<MediaQueueWindowItem> = emptyList(),
+    /** Monotonic timestamp of the player's position update, before clock extrapolation. */
+    val positionUpdatedAtMs: Long = 0L,
 )
 
 data class MediaQueueWindowItem(
@@ -209,6 +211,7 @@ object MediaSessionBridge {
                     artist = item.description.subtitle?.toString().orEmpty(),
                 )
             },
+            positionUpdatedAtMs = playbackState?.lastPositionUpdateTime ?: 0L,
         )
     }
 
