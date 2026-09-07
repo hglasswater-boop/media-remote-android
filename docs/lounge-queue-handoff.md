@@ -179,6 +179,44 @@ opaque context for all queue entries, publish the trace, or send it elsewhere.
 Reset both tags to INFO when capture ends. A new selection is needed because the
 missing fields cannot be recovered from the previous allowlisted trace.
 
+The 2026-09-06 19:42 retest captured Attempt at index 0 with 57 video IDs and
+the same RQ ID. The selected entry's serializedMdxMetadata decoded to four bytes:
+protobuf varints field 1 = 1 and field 2 = 21. playerParams contained flags and the
+RQ ID, with no explicit source-container ID or playlist title. Supplying the
+captured source context to a read-only TV /next query still returned キュー and
+an expanded list matching all 57 received IDs. A WEB_REMIX /next comparison
+returned no queue header. These queries do not establish how the sender updates
+its header; do not invent a PL ID or treat the opaque metadata as a title.
+The detailed trace was disabled after capture. Playback settled on Attempt with
+the requested video ID; the playlist-name problem remains unresolved. Confirm
+the sender's actual YTM version before relying on the receiver APK's UI paths.
+
+The user subsequently confirmed the sender is also YTM 9.35.54. A read-only
+music/get_queue lookup returned item renderers and queueContextParams, without
+a queue header; item navigation endpoints retained the RQ ID. At lookup time the
+user had already selected a different 100-item queue (logged at 19:46:33), so do
+not compare that response's items with the earlier 57-item Attempt trace. Static
+client inspection alone has not established a receiver-side header fix. Further
+diagnosis needs the sender's actual runtime state, rather than another unverified
+payload change. No playback change was released after the diagnostic build.
+
+### Premature selection acknowledgement (0.6.32)
+
+With the sender SCG19 connected over USB on 2026-09-07, its six DEX files were
+byte-identical to the receiver's 9.35.54 APK. Selecting La lune from Favorite
+Songs caused the receiver to acknowledge its video ID while its snapshot still
+said Some Feeling. The same sequence appeared in the earlier Attempt/Fade Out
+trace. A fresh position reset alone was being treated as a same-video restart.
+
+Remember whether the requested video was already confirmed before dispatch, with
+a baseline matching the last confirmed track. Only that case may acknowledge a
+clock reset without a track/queue transition. Keep this flag across duplicate
+setPlaylist messages. The APK regression now rejects an old-title clock reset
+before accepting the actual new-title transition; it also retains the confirmed
+same-Questions restart case. The 0.6.31 APK fails the added regression. This fixes
+premature acknowledgement; sender playlist-header behavior requires separate
+device verification and must not be called fixed based on this regression.
+
 Build/test/lint. Update with the same signing certificate (do not clear app data).
 Capture the documented diagnostic tags. Reconnect the sender and select a new
 song from Favorite Songs, recording title/artist. Correlate incoming IDs/index,

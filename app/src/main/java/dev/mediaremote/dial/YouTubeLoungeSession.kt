@@ -107,6 +107,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
     @Volatile private var senderSelectionBaseline: MediaSnapshot? = null
     @Volatile private var senderSelectionCommandAccepted = false
+    @Volatile private var senderSelectionWasSameVideo = false
     @Volatile private var senderSelectionSeekVideoId: String? = null
     @Volatile private var senderSelectionPositionMs: Long? = null
     @Volatile private var senderSelectionSeekApplied = false
@@ -436,7 +437,10 @@ internal class YouTubeLoungeSession(
         ) pendingPlaylistNotification = true
 
         if (videoId != null && isSetPlaylist && !duplicatePendingSelection) {
-            senderSelectionBaseline = MediaSessionBridge.snapshot(appContext)
+            val baseline = MediaSessionBridge.snapshot(appContext)
+            senderSelectionWasSameVideo = currentVideoConfirmed && currentVideoId == videoId &&
+                lastMediaSnapshot?.let { sameTrack(it, baseline) } == true
+            senderSelectionBaseline = baseline
             senderSelectionCommandAccepted = false
             clearSenderSelectionSeek()
             setCurrentVideo(videoId)
@@ -974,7 +978,12 @@ internal class YouTubeLoungeSession(
         if (!snapshot.available || snapshot.title.isBlank()) return false
         val baseline = senderSelectionBaseline ?: previousSnapshot ?: return false
         if (trackIdentityChanged(baseline, snapshot)) return true
-        if (selectionRestartObserved(baseline, snapshot, senderSelectionPositionMs)) return true
+        // A new selection can reset the old player's clock before its metadata changes.
+        // Only a previously confirmed selection of this same video may use a clock reset
+        // as acknowledgement; otherwise wait for track/queue identity to change.
+        if (senderSelectionWasSameVideo &&
+            selectionRestartObserved(baseline, snapshot, senderSelectionPositionMs)
+        ) return true
         return baseline.title.isBlank() && baseline.mediaId.isBlank() && snapshot.queueSize > 0
     }
 

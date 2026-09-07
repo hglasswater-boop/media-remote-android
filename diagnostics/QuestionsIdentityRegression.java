@@ -96,6 +96,8 @@ public final class QuestionsIdentityRegression {
         field(session, "senderExpectedVideoId", EXPECTED);
         field(session, "senderSelectionDeadlineMs", Long.MAX_VALUE);
         field(session, "senderSelectionCommandAccepted", true);
+        try { field(session, "senderSelectionWasSameVideo", sameTrack); }
+        catch (NoSuchFieldException ignored) { /* Compare against the pre-fix APK. */ }
         field(session, "currentVideoId", EXPECTED);
         field(session, "currentListId", "RQregression");
         field(session, "currentVideoIds", java.util.Collections.singletonList(EXPECTED));
@@ -103,6 +105,20 @@ public final class QuestionsIdentityRegression {
 
         Method reconcile = sessionType.getDeclaredMethod("syncCurrentVideo", snapshotType, boolean.class, snapshotType);
         reconcile.setAccessible(true);
+        if (!sameTrack) {
+            // Captured on 802SO: selecting a different video first resets the old track's
+            // clock. That must not acknowledge the selection or cache its ID under the old title.
+            field(baseline, "positionMs", 16448L);
+            Object stale = snapshot(snapshotType, "On Your Side", "", 235000L);
+            field(stale, "positionMs", 0L);
+            try { field(stale, "positionUpdatedAtMs", 116500L); }
+            catch (NoSuchFieldException ignored) { }
+            field(session, "senderSelectionPositionMs", 0L);
+            reconcile.invoke(session, stale, true, baseline);
+            if (Boolean.TRUE.equals(field(session, "currentVideoConfirmed")))
+                throw new AssertionError("Old-track clock reset acknowledged a different requested video");
+            System.out.println("PASS: old-track clock reset waits for the selected track");
+        }
         reconcile.invoke(session, selected, true, baseline);
         if (!Boolean.TRUE.equals(field(session, "currentVideoConfirmed")))
             throw new AssertionError("Selection was not confirmed before publication; sameTrack=" + sameTrack);
