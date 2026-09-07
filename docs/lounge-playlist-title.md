@@ -67,3 +67,44 @@ Pre-publication validation: local `testDebugUnitTest` and `lintDebug` completed
 successfully. Version 0.6.27 contains the diagnostics and playback correction;
 end-to-end sender title and position verification still requires the signed APK
 on the connected phone.
+
+## Direct sender verification, 2026-09-07
+
+Both phones were attached through USB. The sender reports YouTube Music 9.35.54;
+all six DEX files match the receiver's 9.35.54 APK byte for byte. Receiver build
+0.6.32 (1067) was installed with the existing release certificate.
+
+The sender displayed the correct `夜` header while playing `Motion of sphere`
+locally. Reconnecting to YT Music Remote retained that header. The first handoff
+was rejected because no MediaController was available; opening receiver YouTube
+Music and using the sender's playback control subsequently produced advancing
+playback position on the receiver and sender.
+
+While connected, opening the separate `Coldplay` playlist and pressing its play
+button reproduced the stale header: the sender showed `Major Minus` but still
+displayed `夜`. Thus 0.6.32 does not fix playlist-title synchronization. The
+incoming selection contained eight video IDs and reused the previous RQ ID.
+
+This test also exposed a separate playback inconsistency. At 09:13:06 the
+receiver briefly confirmed `Major Minus`, then its active queue and metadata
+returned to `Motion of sphere`; a subsequent system MediaSession dump still
+reported the latter. The sender showed the previous track's roughly five-minute
+duration. Do not describe this run as successful playback of the Coldplay track.
+The initial notification transition alone was insufficient evidence of a stable
+native queue handoff. Device screenshots and raw logs are retained outside Git.
+
+The user authorized the `小さい画面` destination for the genuine receiver
+comparison. It was initially advertising `YouTube を再生しています`; attempts to
+join that existing session remained on the sender's `接続しています...` overlay.
+After the user returned it to its idle screen, a fresh connection succeeded.
+
+The stock receiver gave the same stale-header result as YT Music Remote. Starting
+from local playback, `Paradise` displayed `Coldplay` before and after connecting.
+While connected, selecting the separate `夜` playlist correctly changed the track
+to `Motion of sphere`, with advancing position and the correct 5:03 duration, but
+the bottom header remained `Coldplay` after waiting. The sender UI hierarchy also
+reported `Motion of sphere` and `Coldplay` simultaneously. The connection was
+then moved back to the sender and left paused. Therefore this playlist-switch
+behavior is reproducible on Google's receiver with the same YTM 9.35.54 sender;
+it is not evidence of a receiver-specific protocol defect. Selecting a playlist
+locally before connecting remains the reliable way to show its name.
