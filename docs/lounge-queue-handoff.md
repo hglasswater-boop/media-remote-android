@@ -217,6 +217,21 @@ same-Questions restart case. The 0.6.31 APK fails the added regression. This fix
 premature acknowledgement; sender playlist-header behavior requires separate
 device verification and must not be called fixed based on this regression.
 
+### Fixed-window local navigation (0.6.33)
+
+On 2026-09-07, the receiver MediaSession had moved from `Voodoo?` to `On Your Mind`,
+but the sender remained on `Voodoo?` and extrapolated its displayed time past the duration.
+The receiver exposed 25 stable queue rows and advanced only `activeQueueItemId` / queueIndex;
+the existing adapter handled a sliding window but not this fixed-window form. Catalog search
+could not resolve `On Your Mind` (repeated score 135 rejections), so the new identity was never
+published.
+
+When at least two positive queue IDs remain at the same positions, map the proven active-index
+movement onto the last confirmed absolute Lounge index. Reject unchanged, out-of-range, large,
+or rebuilt-window moves. If neither this nor another identity path can resolve a detected new
+track, send one buffering state for the last confirmed item so the sender stops extrapolating
+its old playback clock while resolution is pending.
+
 Build/test/lint. Update with the same signing certificate (do not clear app data).
 Capture the documented diagnostic tags. Reconnect the sender and select a new
 song from Favorite Songs, recording title/artist. Correlate incoming IDs/index,

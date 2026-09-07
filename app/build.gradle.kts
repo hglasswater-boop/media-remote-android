@@ -17,7 +17,7 @@ android {
         minSdk = 28
         targetSdk = 37
         versionCode = providers.gradleProperty("buildNumber").orNull?.toIntOrNull() ?: 20
-        versionName = "0.6.32"
+        versionName = "0.6.33"
     }
 
     signingConfigs {

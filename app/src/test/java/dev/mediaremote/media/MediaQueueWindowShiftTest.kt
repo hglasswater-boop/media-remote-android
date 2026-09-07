@@ -17,6 +17,20 @@ class MediaQueueWindowShiftTest {
         )
     }
 
+    @Test fun findsMovementInsideStableFixedWindow() {
+        val queue = listOf(item(829), item(830), item(831), item(832), item(833))
+        assertEquals(1, MediaQueueWindowShift.fixedWindowMove(queue, queue, 1, 2))
+        assertEquals(-1, MediaQueueWindowShift.fixedWindowMove(queue, queue, 3, 2))
+    }
+
+    @Test fun refusesFixedWindowMoveWithoutStableQueueProof() {
+        val before = listOf(item(829), item(830), item(831), item(832))
+        val rebuilt = listOf(item(900), item(901), item(902), item(903))
+        assertNull(MediaQueueWindowShift.fixedWindowMove(before, rebuilt, 1, 2))
+        assertNull(MediaQueueWindowShift.fixedWindowMove(before, before, 1, 1))
+        assertNull(MediaQueueWindowShift.fixedWindowMove(before, before, 0, 3, maxMove = 2))
+    }
+
     @Test fun findsMultiTrackAdvanceOnlyWithConsecutiveIds() {
         assertEquals(
             2,

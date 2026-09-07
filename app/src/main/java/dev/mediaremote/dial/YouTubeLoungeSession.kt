@@ -59,6 +59,18 @@ internal fun selectionRestartObserved(
     return abs(current.positionMs - requestedPositionMs) <= 1_500L
 }
 
+/** Freeze the last confirmed item while the next item's Lounge identity is being resolved. */
+internal fun unresolvedTransitionSnapshot(previous: MediaSnapshot): MediaSnapshot = previous.copy(
+    playing = false,
+    playbackState = PlaybackState.STATE_BUFFERING,
+    playbackSpeed = 0f,
+    positionMs = if (previous.durationMs > 0L) {
+        previous.positionMs.coerceIn(0L, previous.durationMs)
+    } else {
+        previous.positionMs.coerceAtLeast(0L)
+    },
+)
+
 /**
  * Minimal YouTube Lounge receiver used by the DIAL path.
  *
@@ -710,6 +722,18 @@ internal class YouTubeLoungeSession(
         val snapshot = MediaSessionBridge.snapshot(appContext)
         val previous = lastMediaSnapshot
         val trackChanged = previous != null && trackIdentityChanged(previous, snapshot)
+        // Build this while the previous video/list identity is still current. If the new item
+        // cannot be identified immediately, a buffering update stops the sender extrapolating the
+        // old playing clock beyond its duration.
+        val unresolvedTransitionState = if (
+            trackChanged &&
+            currentVideoConfirmed &&
+            currentVideoId == previous.mediaId
+        ) {
+            stateChangePayload(unresolvedTransitionSnapshot(previous))
+        } else {
+            null
+        }
 
         syncCurrentVideo(
             snapshot,
@@ -718,6 +742,14 @@ internal class YouTubeLoungeSession(
         )
         if (!currentVideoConfirmed && snapshot.title.isNotBlank()) {
             scheduleIdentityResolution(snapshot)
+            unresolvedTransitionState?.let { payload ->
+                Log.i(
+                    TAG,
+                    "New track identity unresolved; freezing previous sender clock: " +
+                        "videoId=${previous?.mediaId ?: "<none>"}",
+                )
+                sendMessage(aid, "onStateChange", payload)
+            }
         }
 
         val mediaChanged = previous == null ||
@@ -1007,6 +1039,29 @@ internal class YouTubeLoungeSession(
         // previous.mediaId is the verified absolute context remembered after the preceding sync.
         // Without it, a repeated sync of the same new window could advance the index twice.
         if (previous.mediaId != currentId) return null
+
+        // Recent YTM builds can retain all 25 queue rows and advance activeQueueItemId within that
+        // fixed window. Map the proven relative move onto Lounge's absolute queue before falling
+        // back to the older sliding-window overlap detector.
+        val fixedWindowMove = MediaQueueWindowShift.fixedWindowMove(
+            previous = previous.queueWindow,
+            current = snapshot.queueWindow,
+            previousIndex = previous.queueIndex,
+            currentIndex = snapshot.queueIndex,
+        )
+        if (fixedWindowMove != null) {
+            val resolvedIndex = absoluteIndex + fixedWindowMove
+            val resolved = ids.getOrNull(resolvedIndex)
+            if (resolved != null) {
+                Log.i(
+                    TAG,
+                    "Resolved local track from fixed MediaSession queue: videoId=$resolved " +
+                        "index=$resolvedIndex move=$fixedWindowMove",
+                )
+                return resolved
+            }
+        }
+
         val shift = MediaQueueWindowShift.forwardShift(previous.queueWindow, snapshot.queueWindow) ?: return null
         val resolved = ids.getOrNull(absoluteIndex + shift) ?: return null
         Log.i(

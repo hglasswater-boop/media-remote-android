@@ -43,10 +43,37 @@ data class MediaQueueWindowItem(
 )
 
 /**
- * YouTube Music exposes a sliding window whose first item becomes the active item after Next.
- * Require two consecutive stable queue ids: titles alone are not enough when a queue has repeats.
+ * Detect proven movement in YouTube Music's fixed or sliding MediaSession queue windows.
+ * Queue IDs are required throughout: titles alone are not enough when a queue has repeats.
  */
 internal object MediaQueueWindowShift {
+    /**
+     * Some YouTube Music builds expose a fixed queue window and move only activeQueueItemId.
+     * Prove that the window itself stayed put before using the relative active-index movement.
+     */
+    fun fixedWindowMove(
+        previous: List<MediaQueueWindowItem>,
+        current: List<MediaQueueWindowItem>,
+        previousIndex: Int,
+        currentIndex: Int,
+        maxMove: Int = 5,
+    ): Int? {
+        if (previous.size < 2 || current.size < 2) return null
+        if (previousIndex !in previous.indices || currentIndex !in current.indices) return null
+
+        val move = currentIndex - previousIndex
+        if (move == 0 || kotlin.math.abs(move) > maxMove) return null
+        if (previous[previousIndex].queueId <= 0L || current[currentIndex].queueId <= 0L ||
+            previous[previousIndex].queueId == current[currentIndex].queueId
+        ) return null
+
+        val comparisons = minOf(previous.size, current.size)
+        val stableIds = (0 until comparisons).count { index ->
+            previous[index].queueId > 0L && previous[index].queueId == current[index].queueId
+        }
+        return move.takeIf { stableIds >= 2 }
+    }
+
     fun forwardShift(
         previous: List<MediaQueueWindowItem>,
         current: List<MediaQueueWindowItem>,
