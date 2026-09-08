@@ -1,0 +1,109 @@
+name: Bug report
+description: Report a reproducible problem with YT Music Remote
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please remove account information, tokens, cookies, LAN passwords, and other secrets before submitting.
+
+  - type: input
+    id: app-version
+    attributes:
+      label: YT Music Remote version / build
+      placeholder: "e.g. 0.6.33 / build 1068"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Playback device
+      placeholder: "e.g. Pixel 9, Galaxy S25"
+    validations:
+      required: true
+
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      placeholder: "e.g. Android 16"
+    validations:
+      required: true
+
+  - type: input
+    id: ytm-version
+    attributes:
+      label: YouTube Music version
+      placeholder: "Version shown in Android app info"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Cast target discovery
+        - Connection / reconnect
+        - Playback start
+        - Play / pause / next / previous
+        - Seek / playback position
+        - Track metadata / artwork
+        - Playlist / queue
+        - App update
+        - UI
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Please provide the shortest reliable sequence that reproduces the issue.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: network
+    attributes:
+      label: Network details
+      description: Optional. Useful for discovery/connection issues. Do not include Wi-Fi passwords or public IP addresses.
+      placeholder: "Same Wi-Fi, mesh/AP isolation/VPN details if relevant"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Remove personal information and secrets first.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing Issues for the same problem.
+          required: true
+        - label: I removed credentials, tokens, cookies, passwords, and other secrets.
+          required: true
