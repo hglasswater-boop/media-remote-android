@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an improvement for YT Music Remote
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please focus on the user problem first, then describe a possible solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the user-visible behavior you would like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Mention workarounds or other designs you considered.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Cast / discovery
+        - Playback control
+        - Metadata / artwork
+        - Playlist / queue
+        - Connection / reconnect
+        - App update
+        - UI / UX
+        - Developer tooling / CI
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project boundaries
+      options:
+        - label: This request does not require DRM bypass, credential extraction, or Google Cast certificate spoofing.
+          required: true
+        - label: I searched existing Issues for a similar request.
+          required: true
