@@ -127,6 +127,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentVideoConfirmed = false
     @Volatile private var currentCpn: String = newCpn()
     @Volatile private var lastMediaSnapshot: MediaSnapshot? = null
+    private var lastStateResyncAtMs = 0L
 
     fun start(onReady: (() -> Unit)? = null) {
         if (!running.compareAndSet(false, true)) return
@@ -182,6 +183,29 @@ internal class YouTubeLoungeSession(
         sessionReady = false
         rpcEstablished = false
         rpcConnection?.disconnect()
+    }
+
+    /**
+     * Re-send the complete playback state after the sender wakes or refreshes its Cast view.
+     *
+     * A sleeping YouTube Music sender can keep the Lounge device registered while missing the
+     * receiver's periodic updates. DIAL discovery / app-status traffic is the reliable signal we
+     * get when that sender becomes active again, so send a small retry burst instead of waiting
+     * for a media change or a new Lounge command.
+     */
+    fun requestStateResync(reason: String) {
+        if (!running.get()) return
+        val now = SystemClock.elapsedRealtime()
+        synchronized(this) {
+            if (lastStateResyncAtMs > 0L &&
+                now - lastStateResyncAtMs < STATE_RESYNC_COOLDOWN_MS
+            ) return
+            lastStateResyncAtMs = now
+        }
+        Log.i(TAG, "Scheduling sender state resync: $reason")
+        STATE_RESYNC_RETRY_DELAYS_MS.forEach { delayMs ->
+            requestMediaSync(aid = null, force = true, delayMs = delayMs)
+        }
     }
 
     fun registerPairingCode(code: String): Boolean {
@@ -1581,6 +1605,8 @@ internal class YouTubeLoungeSession(
         private const val URL_REGISTER_PAIRING_CODE = "$BASE/api/lounge/pairing/register_pairing_code"
         private const val URL_BIND = "$BASE/api/lounge/bc/bind"
         private const val MEDIA_SYNC_INTERVAL_MS = 1_000L
+        private const val STATE_RESYNC_COOLDOWN_MS = 4_000L
+        private val STATE_RESYNC_RETRY_DELAYS_MS = longArrayOf(0L, 750L, 1_500L)
         private const val POSITION_CHANGE_THRESHOLD_MS = 400L
         private const val TRACK_DURATION_TOLERANCE_MS = 2_500L
         private const val SENDER_SELECTION_GUARD_MS = 4_000L

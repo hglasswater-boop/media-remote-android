@@ -272,6 +272,7 @@ class DialYouTubeReceiver(context: Context) {
         // Cast-sheet discovery is normal background traffic. Keep it in logcat without showing a
         // user-visible toast every time YouTube Music sends an M-SEARCH probe.
         Log.d(TAG, "YouTube Music DIAL probe detected")
+        loungeSession?.requestStateResync("DIAL probe")
     }
 
     private fun acquireMulticastLock() {
