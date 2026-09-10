@@ -18,6 +18,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -174,6 +175,15 @@ internal class YouTubeLoungeSession(
         identityResolverExecutor.shutdownNow()
     }
 
+    /** Force the current HTTP bind to be recreated after a network handoff. */
+    fun requestReconnect(reason: String) {
+        if (!running.get()) return
+        onStatus(reason)
+        sessionReady = false
+        rpcEstablished = false
+        rpcConnection?.disconnect()
+    }
+
     fun registerPairingCode(code: String): Boolean {
         val cleanCode = code.trim()
         if (cleanCode.isBlank()) return false
@@ -225,43 +235,56 @@ internal class YouTubeLoungeSession(
     private fun establish() {
         sessionReady = false
         rpcEstablished = false
+        bindParams.resetForNewSession()
 
         val storedSid = DialIdentityStore.screenId(appContext)?.takeIf { it.isNotBlank() }
-        val initialSid = storedSid ?: generateScreenId().also {
-            DialIdentityStore.saveScreenId(appContext, it)
+        if (storedSid == null) {
+            val freshSid = generateScreenId()
+            DialIdentityStore.saveScreenId(appContext, freshSid)
+            establishForScreen(freshSid)
+            return
         }
 
-        val (activeSid, token) = if (storedSid == null) {
-            initialSid to getLoungeToken(initialSid)
-        } else {
-            runCatching { storedSid to getLoungeToken(storedSid) }
-                .getOrElse {
-                    DialIdentityStore.clearScreenId(appContext)
-                    val freshSid = generateScreenId()
-                    DialIdentityStore.saveScreenId(appContext, freshSid)
-                    freshSid to getLoungeToken(freshSid)
-                }
-        }
+        runCatching { establishForScreen(storedSid) }
+            .getOrElse { error ->
+                // A screen id can outlive its Lounge token or server-side bind. Do not retry a
+                // permanently stale id forever; create a fresh one and let the next DIAL pairing
+                // attach the sender to the recovered session.
+                Log.w(TAG, "Stored Lounge screen bind failed; creating a fresh screen", error)
+                DialIdentityStore.clearScreenId(appContext)
+                val freshSid = generateScreenId()
+                DialIdentityStore.saveScreenId(appContext, freshSid)
+                establishForScreen(freshSid)
+            }
+    }
 
-        screenId = activeSid
+    private fun establishForScreen(activeSid: String) {
+        val previousScreenId = screenId
+        bindParams.resetForNewSession()
+        val token = getLoungeToken(activeSid)
         bindParams.loungeIdToken = token
 
         val initUrl = "$URL_BIND?${bindParams.initSessionQuery()}"
         val init = LoungeHttp.postForm(initUrl, mapOf("count" to "0"))
-        check(init.code in 200..299) { "Initial Lounge bind HTTP ${init.code}" }
+        requireSuccessful(init, "Initial Lounge bind")
 
         val initialMessages = LoungeMessage.parseMany(init.body)
         initialMessages.forEach(bindParams::updateFrom)
         check(!bindParams.sid.isNullOrBlank()) { "Lounge bind did not provide SID" }
         check(!bindParams.gsessionId.isNullOrBlank()) { "Lounge bind did not provide gsessionid" }
 
+        screenId = activeSid
         sessionReady = true
+        if (previousScreenId != null && previousScreenId != activeSid) {
+            Log.i(TAG, "Lounge screen id changed; waiting for a fresh sender pairing")
+            resetSenderStateForReconnect()
+        }
         Log.i(TAG, "Lounge initial bind ready for theme=m screenId=$activeSid")
     }
 
     private fun generateScreenId(): String {
         val response = LoungeHttp.get(URL_GENERATE_SCREEN_ID)
-        check(response.code in 200..299) { "generate_screen_id HTTP ${response.code}" }
+        requireSuccessful(response, "generate_screen_id")
         return response.body.trim().also { check(it.isNotBlank()) { "Empty screen id" } }
     }
 
@@ -270,7 +293,7 @@ internal class YouTubeLoungeSession(
             URL_GET_LOUNGE_TOKEN,
             mapOf("screen_ids" to sid),
         )
-        check(response.code in 200..299) { "get_lounge_token_batch HTTP ${response.code}" }
+        requireSuccessful(response, "get_lounge_token_batch")
         val screen = JSONObject(response.body)
             .optJSONArray("screens")
             ?.optJSONObject(0)
@@ -279,26 +302,50 @@ internal class YouTubeLoungeSession(
             ?: error("Missing loungeToken")
     }
 
+    private fun requireSuccessful(response: LoungeHttp.Response, operation: String) {
+        if (response.code !in 200..299) {
+            throw LoungeHttp.StatusException(response.code, "$operation: ${response.body}")
+        }
+    }
+
     private fun startRpcLoop(onFirstConnected: (() -> Unit)? = null) {
         rpcFuture = rpcExecutor.submit {
             var readyCallbackFired = false
+            var idleTimeouts = 0
+            var consecutiveFailures = 0
             while (running.get()) {
+                if (!sessionReady) {
+                    runCatching { establish() }
+                        .onFailure {
+                            Log.w(TAG, "Lounge re-establish failed", it)
+                            onStatus("YouTube Lounge再接続を再試行中")
+                            sleepInterruptibly(3_000)
+                        }
+                    continue
+                }
+
                 try {
                     val url = "$URL_BIND?${bindParams.rpcQuery()}"
                     val connection = LoungeHttp.openLongPoll(url)
                     rpcConnection = connection
                     BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
-                        if (!readyCallbackFired) {
-                            rpcEstablished = true
+                        val reconnected = readyCallbackFired
+                        rpcEstablished = true
+                        consecutiveFailures = 0
+                        if (!reconnected) {
                             readyCallbackFired = true
                             Log.i(TAG, "Lounge RPC connection established")
                             onStatus("YouTube Lounge RPC接続完了")
                             runCatching { onFirstConnected?.invoke() }
                                 .onFailure { Log.e(TAG, "Lounge RPC ready callback failed", it) }
+                        } else {
+                            Log.i(TAG, "Lounge RPC connection re-established")
+                            onStatus("YouTube Lounge RPC再接続完了")
                         }
 
                         while (running.get()) {
                             val line = reader.readLine() ?: break
+                            if (line.isNotBlank()) idleTimeouts = 0
                             val messages = LoungeMessage.parseMany(line)
                             messages.forEach { message ->
                                 bindParams.updateFrom(message)
@@ -306,9 +353,40 @@ internal class YouTubeLoungeSession(
                             }
                         }
                     }
+                    rpcEstablished = false
+                    if (running.get()) {
+                        Log.w(TAG, "Lounge RPC stream ended")
+                        sleepInterruptibly(750)
+                    }
                 } catch (error: Exception) {
                     if (running.get()) {
-                        Log.w(TAG, "Lounge RPC disconnected", error)
+                        rpcEstablished = false
+                        val statusError = error as? LoungeHttp.StatusException
+                        val sessionExpired = statusError != null &&
+                            statusError.code in STALE_SESSION_HTTP_CODES
+                        if (sessionExpired) {
+                            Log.w(TAG, "Lounge RPC session expired; re-establishing", error)
+                            reestablishAfterRpcFailure("Lounge RPCセッション期限切れ")
+                            idleTimeouts = 0
+                            consecutiveFailures = 0
+                        } else if (error is SocketTimeoutException) {
+                            idleTimeouts++
+                            Log.w(TAG, "Lounge RPC long-poll timed out", error)
+                            if (idleTimeouts >= RPC_IDLE_REBIND_TIMEOUTS && !senderConnected) {
+                                Log.w(TAG, "Lounge RPC idle session is stale; re-establishing")
+                                reestablishAfterRpcFailure("Lounge RPCアイドル接続を再確立中")
+                                idleTimeouts = 0
+                            }
+                        } else {
+                            consecutiveFailures++
+                            Log.w(TAG, "Lounge RPC disconnected", error)
+                            if (consecutiveFailures >= RPC_FAILURE_REBIND_THRESHOLD &&
+                                !senderConnected
+                            ) {
+                                reestablishAfterRpcFailure("Lounge RPC接続を再確立中")
+                                consecutiveFailures = 0
+                            }
+                        }
                         sleepInterruptibly(750)
                     }
                 } finally {
@@ -316,6 +394,30 @@ internal class YouTubeLoungeSession(
                     rpcConnection = null
                 }
             }
+        }
+    }
+
+    private fun reestablishAfterRpcFailure(reason: String): Boolean {
+        if (!running.get()) return false
+        resetSenderStateForReconnect()
+        onStatus(reason)
+        return runCatching {
+            establish()
+            onStatus("YouTube Loungeセッション再確立完了")
+            true
+        }.onFailure {
+            Log.w(TAG, "Lounge session re-establish failed", it)
+        }.getOrDefault(false)
+    }
+
+    private fun resetSenderStateForReconnect() {
+        senderConnected = false
+        stateSyncDirty.set(false)
+        synchronized(this) {
+            pendingStateAid = null
+            pendingIdentityKey = null
+            lastMediaSnapshot = null
+            clearPlaybackContext()
         }
     }
 
@@ -1487,6 +1589,9 @@ internal class YouTubeLoungeSession(
         private const val SELECTION_POSITION_OVERRIDE_MS = 1_500L
         private const val SELECTION_POSITION_STALE_THRESHOLD_MS = 1_000L
         private const val IDENTITY_RESOLUTION_ATTEMPTS = 3
+        private const val RPC_IDLE_REBIND_TIMEOUTS = 3
+        private const val RPC_FAILURE_REBIND_THRESHOLD = 3
+        private val STALE_SESSION_HTTP_CODES = setOf(400, 401, 403, 404)
         private val IDENTITY_RETRY_DELAYS_MS = longArrayOf(500L, 1_000L)
         private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
 

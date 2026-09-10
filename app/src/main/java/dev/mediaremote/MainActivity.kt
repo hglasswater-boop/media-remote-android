@@ -2,6 +2,7 @@ package dev.mediaremote
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -24,7 +25,12 @@ import dev.mediaremote.update.StartupUpdateCheck
 
 class MainActivity : ComponentActivity() {
     private val runtimePermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            // On Android 17 the receiver must not be started before the local-network
+            // permission result is applied. onResume() is not guaranteed to run again after
+            // every permission-dialog path, so retry explicitly from the callback as well.
+            startCastReceiver()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +58,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCastReceiver() {
+        if (Build.VERSION.SDK_INT >= 37 &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_LOCAL_NETWORK,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Local network permission is required before starting DIAL receiver")
+            return
+        }
+
         runCatching {
             ContextCompat.startForegroundService(
                 this,

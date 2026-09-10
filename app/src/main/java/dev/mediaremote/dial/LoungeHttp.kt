@@ -2,11 +2,17 @@ package dev.mediaremote.dial
 
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
 internal object LoungeHttp {
     data class Response(val code: Int, val body: String)
+
+    class StatusException(
+        val code: Int,
+        val body: String,
+    ) : IOException("Lounge RPC HTTP $code ${body.take(200)}")
 
     fun get(url: String, readTimeoutMs: Int = 10_000): Response = request(
         method = "GET",
@@ -38,7 +44,7 @@ internal object LoungeHttp {
             if (responseCode !in 200..299) {
                 val error = runCatching { errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
                 disconnect()
-                error("Lounge RPC HTTP $responseCode ${error.orEmpty()}")
+                throw StatusException(responseCode, error.orEmpty())
             }
         }
     }

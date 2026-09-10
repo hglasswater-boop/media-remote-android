@@ -31,6 +31,13 @@ internal class LoungeBindParams(
     }
 
     @Synchronized
+    fun resetForNewSession() {
+        sid = null
+        gsessionId = null
+        aid = 3
+    }
+
+    @Synchronized
     fun initSessionQuery(): String {
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         return encode(

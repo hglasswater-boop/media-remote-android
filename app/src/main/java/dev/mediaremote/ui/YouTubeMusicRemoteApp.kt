@@ -1,8 +1,12 @@
 package dev.mediaremote.ui
 
+import android.Manifest
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,9 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import dev.mediaremote.media.MediaNotificationListener
 import dev.mediaremote.media.MediaSessionBridge
 import dev.mediaremote.media.MediaSnapshot
+import dev.mediaremote.network.RemoteServerService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,7 +78,9 @@ fun YouTubeMusicRemoteApp() {
 private fun PlaybackSetup() {
     val context = LocalContext.current
     var listenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
+    var localNetworkAllowed by remember { mutableStateOf(isLocalNetworkAccessAllowed(context)) }
     var snapshot by remember { mutableStateOf(MediaSessionBridge.snapshot(context)) }
+    var restartRequested by remember { mutableStateOf(false) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -118,11 +126,63 @@ private fun PlaybackSetup() {
                 "アプリ起動時に自動でCast待受を開始します。操作側のYouTube Musicと同じLANに接続し、Cast一覧からこの端末を選べます。",
                 style = MaterialTheme.typography.bodySmall,
             )
-            Text(
-                "✓ アプリ起動時に自動開始",
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
+            if (!localNetworkAllowed) {
+                Text(
+                    "ローカルネットワークへのアクセスが必要です。許可されていないとCast一覧に表示されても接続できません。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Button(
+                    onClick = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}"),
+                            ),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("ローカルネットワーク権限を設定")
+                }
+            } else {
+                Text(
+                    "✓ アプリ起動時に自動開始・ローカルネットワーク許可済み",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    listenerEnabled = isNotificationListenerEnabled(context)
+                    localNetworkAllowed = isLocalNetworkAccessAllowed(context)
+                    snapshot = MediaSessionBridge.snapshot(context)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("設定状態を更新")
+            }
+            Button(
+                onClick = {
+                    restartRequested = runCatching {
+                        ContextCompat.startForegroundService(
+                            context,
+                            Intent(context, RemoteServerService::class.java)
+                                .setAction(RemoteServerService.ACTION_RESTART),
+                        )
+                    }.isSuccess
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Cast待受を再起動（再生は継続）")
+            }
+            if (restartRequested) {
+                Text(
+                    "Cast待受を再起動しました。数秒待ってから操作側でCast先を選び直してください。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 
@@ -194,3 +254,10 @@ private fun isNotificationListenerEnabled(context: Context): Boolean {
         android.content.ComponentName(context, MediaNotificationListener::class.java),
     )
 }
+
+private fun isLocalNetworkAccessAllowed(context: Context): Boolean =
+    Build.VERSION.SDK_INT < 37 ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_LOCAL_NETWORK,
+        ) == PackageManager.PERMISSION_GRANTED

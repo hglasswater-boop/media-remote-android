@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal class DialSsdpAdvertiser(
     private val identityUuid: String,
+    private val bootId: Long,
     private val httpPort: Int,
     private val hostAddress: () -> String,
     private val onProbe: () -> Unit,
@@ -134,7 +135,7 @@ internal class DialSsdpAdvertiser(
             append("SERVER: Android/${Build.VERSION.RELEASE} UPnP/1.1 YTMusicRemote/${BuildConfig.VERSION_NAME}\r\n")
             append("ST: $searchTarget\r\n")
             append("USN: ${usn(searchTarget)}\r\n")
-            append("BOOTID.UPNP.ORG: 1\r\n")
+            append("BOOTID.UPNP.ORG: $bootId\r\n")
             append("CONFIGID.UPNP.ORG: 1\r\n")
             append("\r\n")
         }.toByteArray(Charsets.US_ASCII)
@@ -171,7 +172,7 @@ internal class DialSsdpAdvertiser(
             append("LOCATION: ${descriptionUrl()}\r\n")
             append("CACHE-CONTROL: max-age=1800\r\n")
             append("SERVER: Android/${Build.VERSION.RELEASE} UPnP/1.1 YTMusicRemote/${BuildConfig.VERSION_NAME}\r\n")
-            append("BOOTID.UPNP.ORG: 1\r\n")
+            append("BOOTID.UPNP.ORG: $bootId\r\n")
             append("CONFIGID.UPNP.ORG: 1\r\n")
         }
         append("\r\n")
