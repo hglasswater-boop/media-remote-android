@@ -92,7 +92,6 @@ internal class DialHttpServer(
 
                 request.method == "GET" && path == APP_PATH -> {
                     onStatus("YouTube MusicがDIALアプリ情報を確認")
-                    loungeSession.requestStateResync("DIAL app status request")
                     writeResponse(
                         output,
                         200,
@@ -103,7 +102,6 @@ internal class DialHttpServer(
                 }
 
                 request.method == "GET" && isAppInstancePath(path) -> {
-                    loungeSession.requestStateResync("DIAL app instance request")
                     writeResponse(
                         output,
                         200,

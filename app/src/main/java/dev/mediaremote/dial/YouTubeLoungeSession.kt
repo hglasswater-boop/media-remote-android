@@ -128,6 +128,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var currentCpn: String = newCpn()
     @Volatile private var lastMediaSnapshot: MediaSnapshot? = null
     private var lastStateResyncAtMs = 0L
+    private var stateResyncGeneration = 0L
 
     fun start(onReady: (() -> Unit)? = null) {
         if (!running.compareAndSet(false, true)) return
@@ -189,22 +190,43 @@ internal class YouTubeLoungeSession(
      * Re-send the complete playback state after the sender wakes or refreshes its Cast view.
      *
      * A sleeping YouTube Music sender can keep the Lounge device registered while missing the
-     * receiver's periodic updates. DIAL discovery / app-status traffic is the reliable signal we
-     * get when that sender becomes active again, so send a small retry burst instead of waiting
-     * for a media change or a new Lounge command.
+     * receiver's periodic updates. A Lounge sender-status event is a safer wake signal than DIAL
+     * discovery, because DIAL discovery also happens while the user is starting a new selection.
+     * Send a small retry burst instead of waiting for a media change or a new Lounge command.
      */
     fun requestStateResync(reason: String) {
         if (!running.get()) return
         val now = SystemClock.elapsedRealtime()
-        synchronized(this) {
+        val generation = synchronized(this) {
             if (lastStateResyncAtMs > 0L &&
                 now - lastStateResyncAtMs < STATE_RESYNC_COOLDOWN_MS
             ) return
             lastStateResyncAtMs = now
+            stateResyncGeneration += 1L
+            stateResyncGeneration
         }
         Log.i(TAG, "Scheduling sender state resync: $reason")
         STATE_RESYNC_RETRY_DELAYS_MS.forEach { delayMs ->
-            requestMediaSync(aid = null, force = true, delayMs = delayMs)
+            runCatching {
+                mediaSyncExecutor.schedule(
+                    {
+                        val stillCurrent = synchronized(this) {
+                            stateResyncGeneration == generation
+                        }
+                        if (!stillCurrent || !running.get()) return@schedule
+                        runCatching { publishMediaState(aid = null, force = true) }
+                            .onFailure { error ->
+                                if (running.get()) {
+                                    Log.w(TAG, "Requested sender state resync failed", error)
+                                }
+                            }
+                    },
+                    delayMs,
+                    TimeUnit.MILLISECONDS,
+                )
+            }.onFailure { error ->
+                if (running.get()) Log.w(TAG, "Unable to schedule sender state resync", error)
+            }
         }
     }
 
@@ -448,28 +470,37 @@ internal class YouTubeLoungeSession(
     private fun handleIncoming(message: LoungeMessage) {
         val payload = message.payload as? JSONObject
         when (message.name) {
-            "setPlaylist", "updatePlaylist" -> handlePlaylistMessage(message, payload)
+            "setPlaylist", "updatePlaylist" -> {
+                cancelPendingStateResyncForSelection()
+                handlePlaylistMessage(message, payload)
+            }
             "play" -> {
+                cancelPendingStateResyncForSelection()
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Play)
                 requestMediaSync(message.aid, force = true, delayMs = 120)
             }
             "pause" -> {
+                cancelPendingStateResyncForSelection()
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Pause)
                 requestMediaSync(message.aid, force = true, delayMs = 120)
             }
             "stopVideo" -> {
+                cancelPendingStateResyncForSelection()
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Stop)
                 requestMediaSync(message.aid, force = true, delayMs = 120)
             }
             "next" -> {
+                cancelPendingStateResyncForSelection()
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Next)
                 requestMediaSync(message.aid, force = true, delayMs = 220)
             }
             "previous" -> {
+                cancelPendingStateResyncForSelection()
                 MediaSessionBridge.execute(appContext, RemoteMediaCommand.Previous)
                 requestMediaSync(message.aid, force = true, delayMs = 220)
             }
             "seekTo" -> {
+                cancelPendingStateResyncForSelection()
                 val seconds = payload?.optString("newTime")?.toDoubleOrNull()
                     ?: payload?.optDouble("newTime", Double.NaN)?.takeUnless { it.isNaN() }
                 if (seconds != null) {
@@ -782,6 +813,7 @@ internal class YouTubeLoungeSession(
         publishSenderConnectedState(aid)
         sendVolume(aid)
         startMediaSync()
+        if (wasConnected) requestStateResync("Lounge sender status refresh")
     }
 
     private fun remoteSenderPresent(payload: JSONObject?): Boolean? {
@@ -1371,6 +1403,11 @@ internal class YouTubeLoungeSession(
         startStateSyncDrain()
     }
 
+    @Synchronized
+    private fun cancelPendingStateResyncForSelection() {
+        stateResyncGeneration += 1L
+    }
+
     private fun startStateSyncDrain() {
         if (!stateSyncQueued.compareAndSet(false, true)) return
         sendExecutor.execute {
@@ -1606,7 +1643,7 @@ internal class YouTubeLoungeSession(
         private const val URL_BIND = "$BASE/api/lounge/bc/bind"
         private const val MEDIA_SYNC_INTERVAL_MS = 1_000L
         private const val STATE_RESYNC_COOLDOWN_MS = 4_000L
-        private val STATE_RESYNC_RETRY_DELAYS_MS = longArrayOf(0L, 750L, 1_500L)
+        private val STATE_RESYNC_RETRY_DELAYS_MS = longArrayOf(750L, 1_500L, 3_000L)
         private const val POSITION_CHANGE_THRESHOLD_MS = 400L
         private const val TRACK_DURATION_TOLERANCE_MS = 2_500L
         private const val SENDER_SELECTION_GUARD_MS = 4_000L
