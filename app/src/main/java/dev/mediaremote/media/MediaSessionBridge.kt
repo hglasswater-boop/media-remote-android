@@ -12,6 +12,8 @@ import android.media.session.PlaybackState
 import android.media.browse.MediaBrowser
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
@@ -188,6 +190,7 @@ object MediaSessionBridge {
     /** Connect to YouTube Music's public framework MediaBrowser service without UI launching. */
     private fun connectToYouTubeMusicBrowser(context: Context): MediaController? {
         val connected = CountDownLatch(1)
+        val mainHandler = Handler(Looper.getMainLooper())
         var browser: MediaBrowser? = null
         var result: MediaController? = null
         val callback = object : MediaBrowser.ConnectionCallback() {
@@ -208,22 +211,25 @@ object MediaSessionBridge {
             }
         }
 
-        browser = runCatching {
-            MediaBrowser(
-                context.applicationContext,
-                ComponentName(TARGET_PACKAGE, TARGET_BROWSER_SERVICE),
-                callback,
-                null,
-            ).also { it.connect() }
-        }.onFailure {
-            Log.w(TAG, "Unable to connect to YouTube Music MediaBrowserService; " +
-                "type=${it.javaClass.simpleName}")
-        }.getOrNull() ?: return null
+        mainHandler.post {
+            browser = runCatching {
+                MediaBrowser(
+                    context.applicationContext,
+                    ComponentName(TARGET_PACKAGE, TARGET_BROWSER_SERVICE),
+                    callback,
+                    null,
+                ).also { it.connect() }
+            }.onFailure {
+                Log.w(TAG, "Unable to connect to YouTube Music MediaBrowserService; " +
+                    "type=${it.javaClass.simpleName} message=${it.message?.take(160)}")
+                connected.countDown()
+            }.getOrNull()
+        }
 
         runCatching {
             connected.await(BROWSER_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         }
-        runCatching { browser.disconnect() }
+        mainHandler.post { runCatching { browser?.disconnect() } }
         return result
     }
 
