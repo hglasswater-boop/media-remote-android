@@ -9,11 +9,14 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.media.browse.MediaBrowser
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 data class MediaSnapshot(
     val available: Boolean,
@@ -96,6 +99,9 @@ internal object MediaQueueWindowShift {
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
 
+    private const val TARGET_BROWSER_SERVICE =
+        "com.google.android.apps.youtube.music.mediabrowser.MusicBrowserService"
+
     /**
      * Start YouTube Music when a DIAL command arrives before its MediaSession exists.
      *
@@ -106,6 +112,16 @@ object MediaSessionBridge {
      */
     fun ensureYouTubeMusicStarted(context: Context): Boolean {
         if (controller(context) != null) return true
+
+        // YouTube Music exposes a MediaBrowserService with the media-button action. Connecting to
+        // it starts the player service without trying to open an Activity from our background
+        // DIAL/foreground-service process, which Android 10+ rejects as a background activity
+        // start. Keep the resulting controller for the first Lounge command and state snapshot.
+        connectToYouTubeMusicBrowser(context)?.let { browserController ->
+            coldStartController = browserController
+            Log.i(TAG, "YouTube Music MediaBrowserService connected")
+            return true
+        }
 
         val launchIntent = context.packageManager.getLaunchIntentForPackage(TARGET_PACKAGE)
         if (launchIntent == null) {
@@ -163,7 +179,53 @@ object MediaSessionBridge {
         )?.let(::ControllerSource)
     }
 
-    private fun controller(context: Context): MediaController? = controllerSource(context)?.controller
+    private fun controller(context: Context): MediaController? =
+        controllerSource(context)?.controller ?: coldStartController?.takeIf(::isYouTubeMusicController)
+
+    private fun isYouTubeMusicController(controller: MediaController): Boolean =
+        runCatching { controller.packageName == TARGET_PACKAGE }.getOrDefault(false)
+
+    /** Connect to YouTube Music's public framework MediaBrowser service without UI launching. */
+    private fun connectToYouTubeMusicBrowser(context: Context): MediaController? {
+        val connected = CountDownLatch(1)
+        var browser: MediaBrowser? = null
+        var result: MediaController? = null
+        val callback = object : MediaBrowser.ConnectionCallback() {
+            override fun onConnected() {
+                result = runCatching {
+                    val token = browser?.sessionToken ?: return@runCatching null
+                    MediaController(context, token).takeIf(::isYouTubeMusicController)
+                }.getOrNull()
+                connected.countDown()
+            }
+
+            override fun onConnectionFailed() {
+                connected.countDown()
+            }
+
+            override fun onConnectionSuspended() {
+                connected.countDown()
+            }
+        }
+
+        browser = runCatching {
+            MediaBrowser(
+                context.applicationContext,
+                ComponentName(TARGET_PACKAGE, TARGET_BROWSER_SERVICE),
+                callback,
+                null,
+            ).also { it.connect() }
+        }.onFailure {
+            Log.w(TAG, "Unable to connect to YouTube Music MediaBrowserService; " +
+                "type=${it.javaClass.simpleName}")
+        }.getOrNull() ?: return null
+
+        runCatching {
+            connected.await(BROWSER_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        }
+        runCatching { browser.disconnect() }
+        return result
+    }
 
     private fun sessionRank(state: Int): Int = when (state) {
         PlaybackState.STATE_PLAYING -> 5
@@ -573,6 +635,7 @@ object MediaSessionBridge {
     }.getOrDefault(false)
 
     private const val TAG = "MediaSessionBridge"
+    private const val BROWSER_CONNECT_TIMEOUT_MS = 2_500L
     private const val YOUTUBE_MUSIC_SESSION_POLL_COUNT = 20
     private const val YOUTUBE_MUSIC_SESSION_POLL_INTERVAL_MS = 150L
     private const val MAX_BUNDLE_DEPTH = 3
@@ -582,6 +645,9 @@ object MediaSessionBridge {
         "(?:[?&]v=|video(?:_|-)?id[=:/\\s]+)([A-Za-z0-9_-]{11})(?:[^A-Za-z0-9_-]|$)",
         RegexOption.IGNORE_CASE,
     )
+
+    @Volatile
+    private var coldStartController: MediaController? = null
 }
 
 sealed interface RemoteMediaCommand {
