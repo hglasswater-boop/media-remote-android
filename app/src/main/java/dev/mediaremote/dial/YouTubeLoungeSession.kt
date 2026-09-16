@@ -883,7 +883,11 @@ internal class YouTubeLoungeSession(
 
     @Synchronized
     private fun publishMediaState(aid: Int?, force: Boolean) {
-        if (!sessionReady || !senderConnected) return
+        if (!sessionReady || !running.get()) return
+        // A sleeping sender can omit loungeStatus when it wakes. A DIAL app-status request or an
+        // explicit command is still proof that the sender is checking this receiver, so allow the
+        // forced snapshot through even before its status event reaches the Lounge RPC stream.
+        if (!senderConnected && !force) return
 
         val snapshot = MediaSessionBridge.snapshot(appContext)
         val previous = lastMediaSnapshot
