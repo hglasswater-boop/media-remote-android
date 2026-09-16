@@ -214,7 +214,13 @@ internal class YouTubeLoungeSession(
                             stateResyncGeneration == generation
                         }
                         if (!stillCurrent || !running.get()) return@schedule
-                        runCatching { publishMediaState(aid = null, force = true) }
+                        runCatching {
+                            publishMediaState(
+                                aid = null,
+                                force = true,
+                                refreshPlaylist = true,
+                            )
+                        }
                             .onFailure { error ->
                                 if (running.get()) {
                                     Log.w(TAG, "Requested sender state resync failed", error)
@@ -818,7 +824,7 @@ internal class YouTubeLoungeSession(
             onStatus("YouTube Music送信端末とLounge接続成立")
         }
 
-        publishSenderConnectedState(aid)
+        publishSenderConnectedState(aid, refreshPlaylist = !wasConnected)
         sendVolume(aid)
         startMediaSync()
         if (wasConnected) requestStateResync("Lounge sender status refresh")
@@ -869,20 +875,31 @@ internal class YouTubeLoungeSession(
     }
 
     @Synchronized
-    private fun publishSenderConnectedState(aid: Int?) {
+    private fun publishSenderConnectedState(aid: Int?, refreshPlaylist: Boolean = false) {
         if (!sessionReady || !senderConnected) return
 
         val snapshot = MediaSessionBridge.snapshot(appContext)
         syncCurrentVideo(snapshot)
         sendHasPreviousNextChanged(aid, snapshot)
-        sendPendingPlaylistChange(aid)
+        if (refreshPlaylist && currentVideoConfirmed &&
+            currentVideoId?.let(::playlistContextMatches) == true
+        ) {
+            pendingPlaylistNotification = false
+            sendPlaylist(aid)
+        } else {
+            sendPendingPlaylistChange(aid)
+        }
         sendNowPlaying(aid, snapshot)
         if (currentVideoConfirmed) queueStateChange(aid)
         lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
     }
 
     @Synchronized
-    private fun publishMediaState(aid: Int?, force: Boolean) {
+    private fun publishMediaState(
+        aid: Int?,
+        force: Boolean,
+        refreshPlaylist: Boolean = false,
+    ) {
         if (!sessionReady || !running.get()) return
         // A sleeping sender can omit loungeStatus when it wakes. A DIAL app-status request or an
         // explicit command is still proof that the sender is checking this receiver, so allow the
@@ -946,7 +963,14 @@ internal class YouTubeLoungeSession(
         // A track transition must publish its identity before a position-only state update. If
         // MediaSession has not exposed a usable id yet, hold both messages until the resolver can
         // identify the new track; otherwise the sender advances the old song's seek bar.
-        sendPendingPlaylistChange(aid)
+        if (refreshPlaylist && currentVideoConfirmed &&
+            currentVideoId?.let(::playlistContextMatches) == true
+        ) {
+            pendingPlaylistNotification = false
+            sendPlaylist(aid)
+        } else {
+            sendPendingPlaylistChange(aid)
+        }
         if (force || mediaChanged || stateChanged) sendNowPlaying(aid, snapshot)
         if (force || stateChanged || positionChanged) {
             if (currentVideoConfirmed) queueStateChange(aid)
