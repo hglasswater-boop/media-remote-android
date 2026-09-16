@@ -4,23 +4,26 @@ import java.io.ByteArrayOutputStream
 import java.util.Base64
 
 /**
- * Narrow adapter for the MediaItemInfo accepted by YouTube Music 9.34.52 and 9.35.54.
+ * Narrow adapter for the MediaItemInfo accepted by the verified YouTube Music builds.
  *
  * RQ watch URLs lose their playlist at navigation/resolve_url. An embedded WatchEndpoint avoids
  * that resolver. This is an internal, version-specific format, not a public Android contract.
  * Only videoId, playlistId and the zero-based Lounge index have verified field mappings. In
  * particular, do not guess protobuf fields for ctt/params or log their credential-bearing values.
- * The two supported builds expose the same MediaItemInfo/WatchEndpoint parser layout.
+ * The supported builds expose the same MediaItemInfo/WatchEndpoint parser layout.
  * See docs/lounge-queue-handoff.md for device evidence and remaining limitations.
  */
 internal object YouTubeMusicQueueMediaId {
     const val VERIFIED_VERSION = "9.34.52"
     const val VERIFIED_VERSION_9_35_54 = "9.35.54"
+    const val VERIFIED_VERSION_9_36_50 = "9.36.50"
     private val videoIdPattern = Regex("[A-Za-z0-9_-]{11}")
     private val queueIdPattern = Regex("RQ[A-Za-z0-9_-]{1,254}")
 
     fun supportsVersion(version: String?): Boolean =
-        version == VERIFIED_VERSION || version == VERIFIED_VERSION_9_35_54
+        version == VERIFIED_VERSION ||
+            version == VERIFIED_VERSION_9_35_54 ||
+            version == VERIFIED_VERSION_9_36_50
 
     fun encode(videoId: String, playlistId: String, index: Int?): String? {
         if (!videoIdPattern.matches(videoId) || !queueIdPattern.matches(playlistId)) return null

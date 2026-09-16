@@ -44,8 +44,8 @@ performed, and no local synthetic queue is installed.
 
 ## Compatibility and unresolved limitations
 
-- Internal format: enabled only on verified YTM versions **9.34.52** and
-  **9.35.54**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
+- Internal format: enabled only on verified YTM versions **9.34.52**, **9.35.54**, and
+  **9.36.50**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
   Other versions fail this
   RQ command explicitly; ordinary PL/song URI behavior remains unchanged.
 - `ctt` and `params` remain stored in Lounge state but are **not forwarded** by

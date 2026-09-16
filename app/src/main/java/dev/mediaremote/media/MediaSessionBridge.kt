@@ -96,6 +96,38 @@ internal object MediaQueueWindowShift {
 object MediaSessionBridge {
     const val TARGET_PACKAGE = "com.google.android.apps.youtube.music"
 
+    /**
+     * Start YouTube Music when a DIAL command arrives before its MediaSession exists.
+     *
+     * This is intentionally not called from snapshot(): reading Cast state must never launch an
+     * unrelated application. Callers are the DIAL/MediaSession worker threads, not the main
+     * thread; the short wait gives YouTube Music time to publish its session before a command is
+     * dispatched.
+     */
+    fun ensureYouTubeMusicStarted(context: Context): Boolean {
+        if (controller(context) != null) return true
+
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(TARGET_PACKAGE)
+        if (launchIntent == null) {
+            Log.w(TAG, "YouTube Music launch intent unavailable; installed=false")
+            return false
+        }
+        if (!launchYouTubeMusic(context, launchIntent)) return false
+
+        repeat(YOUTUBE_MUSIC_SESSION_POLL_COUNT) {
+            if (controller(context) != null) return true
+            try {
+                Thread.sleep(YOUTUBE_MUSIC_SESSION_POLL_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        val ready = controller(context) != null
+        Log.i(TAG, "YouTube Music launch requested; mediaSessionReady=$ready")
+        return ready
+    }
+
     private data class ControllerSource(
         val controller: MediaController,
         val notification: YouTubeMusicNotificationSession? = null,
@@ -446,14 +478,21 @@ object MediaSessionBridge {
 
     @Suppress("DEPRECATION")
     private fun playLoungeQueue(context: Context, controller: MediaController?, uri: Uri): Boolean {
+        val activeController = controller ?: run {
+            // A DIAL pairing can arrive while YouTube Music has no process/session at all. Start
+            // it on demand, then re-read the controller instead of permanently rejecting the first
+            // selection.
+            ensureYouTubeMusicStarted(context)
+            controller(context)
+        }
         val version = runCatching {
             context.packageManager.getPackageInfo(TARGET_PACKAGE, 0).versionName
         }.getOrNull()
-        val actions = controller?.playbackState?.actions ?: 0L
-        if (!YouTubeMusicQueueMediaId.supportsVersion(version) || controller == null ||
+        val actions = activeController?.playbackState?.actions ?: 0L
+        if (!YouTubeMusicQueueMediaId.supportsVersion(version) || activeController == null ||
             actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID == 0L
         ) {
-            Log.w(TAG, "RQ handoff unavailable: ytmVersion=$version controller=${controller != null} " +
+            Log.w(TAG, "RQ handoff unavailable: ytmVersion=$version controller=${activeController != null} " +
                 "playFromMediaId=${actions and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID != 0L}; no URI fallback")
             return false
         }
@@ -468,7 +507,7 @@ object MediaSessionBridge {
         // A binder dispatch is not proof of playback or queue acceptance. The Lounge selection
         // guard and subsequent MediaSession/nowPlaying logs supply that evidence asynchronously.
         return runCatching {
-            controller.transportControls.playFromMediaId(mediaId, null)
+            activeController.transportControls.playFromMediaId(mediaId, null)
             Log.i(TAG, "RQ playFromMediaId dispatched videoId=$videoId listId=$listId " +
                 "receivedIndex=${index ?: "<absent>"} nativeIndexOmitted=true ytmVersion=$version " +
                 "cttPresent=${!uri.getQueryParameter("ctt").isNullOrBlank()} " +
@@ -529,9 +568,13 @@ object MediaSessionBridge {
             intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP) },
         )
         true
+    }.onFailure {
+        Log.w(TAG, "Unable to launch YouTube Music; type=${it.javaClass.simpleName}")
     }.getOrDefault(false)
 
     private const val TAG = "MediaSessionBridge"
+    private const val YOUTUBE_MUSIC_SESSION_POLL_COUNT = 20
+    private const val YOUTUBE_MUSIC_SESSION_POLL_INTERVAL_MS = 150L
     private const val MAX_BUNDLE_DEPTH = 3
     private val MEDIA_TEXT_NOISE = Regex("[^\\p{L}\\p{N}]+")
     private val YOUTUBE_VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")

@@ -235,6 +235,14 @@ internal class YouTubeLoungeSession(
         if (cleanCode.isBlank()) return false
         onStatus("YouTube MusicのpairingCodeを受信")
 
+        // Stock YouTube Music sends the DIAL pairing request before its playback app has
+        // necessarily created a MediaSession. Launch it here so the sender can connect even from
+        // a cold playback phone; playLoungeQueue repeats the check for a race with app startup.
+        val musicReady = MediaSessionBridge.ensureYouTubeMusicStarted(appContext)
+        if (!musicReady) {
+            Log.w(TAG, "YouTube Music MediaSession is not ready after DIAL launch request")
+        }
+
         val deadline = System.currentTimeMillis() + 1_500
         while (
             running.get() &&
