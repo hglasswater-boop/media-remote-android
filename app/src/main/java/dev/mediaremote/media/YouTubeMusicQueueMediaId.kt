@@ -17,13 +17,15 @@ internal object YouTubeMusicQueueMediaId {
     const val VERIFIED_VERSION = "9.34.52"
     const val VERIFIED_VERSION_9_35_54 = "9.35.54"
     const val VERIFIED_VERSION_9_36_50 = "9.36.50"
+    const val VERIFIED_VERSION_9_38_51 = "9.38.51"
     private val videoIdPattern = Regex("[A-Za-z0-9_-]{11}")
     private val queueIdPattern = Regex("RQ[A-Za-z0-9_-]{1,254}")
 
     fun supportsVersion(version: String?): Boolean =
         version == VERIFIED_VERSION ||
             version == VERIFIED_VERSION_9_35_54 ||
-            version == VERIFIED_VERSION_9_36_50
+            version == VERIFIED_VERSION_9_36_50 ||
+            version == VERIFIED_VERSION_9_38_51
 
     fun encode(videoId: String, playlistId: String, index: Int?): String? {
         if (!videoIdPattern.matches(videoId) || !queueIdPattern.matches(playlistId)) return null

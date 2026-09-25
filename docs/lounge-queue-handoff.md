@@ -44,8 +44,8 @@ performed, and no local synthetic queue is installed.
 
 ## Compatibility and unresolved limitations
 
-- Internal format: enabled only on verified YTM versions **9.34.52**, **9.35.54**, and
-  **9.36.50**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
+- Internal format: enabled only on verified YTM versions **9.34.52**, **9.35.54**,
+  **9.36.50**, and **9.38.51**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
   Other versions fail this
   RQ command explicitly; ordinary PL/song URI behavior remains unchanged.
 - `ctt` and `params` remain stored in Lounge state but are **not forwarded** by
@@ -58,6 +58,14 @@ performed, and no local synthetic queue is installed.
   only, and do not include encoded media IDs or opaque credential values.
 - Playback acceptance, following tracks, sender display, reconnection, and the
   sender's playlist title still require end-to-end testing after installation.
+
+On 2026-09-25, the installed 9.38.51 receiver received a sender `setPlaylist`
+for `Unwind`, but the version gate rejected it despite an active controller
+advertising `ACTION_PLAY_FROM_MEDIA_ID`. A one-shot shell MediaSession probe using
+the same requested video and RQ list changed local playback to `Unwind` and built
+a 25-item queue. This verifies that 9.38.51 accepts the encoded WatchEndpoint
+used by the adapter; sender state still needs validation with the updated receiver
+APK. A same-song probe beforehand also restarted playback and rebuilt the queue.
 - For a fresh `setPlaylist`, the receiver now waits for the requested track to be
   confirmed in MediaSession before applying `currentTime`, including zero. This
   prevents the previous track's final position from being clamped to the new
