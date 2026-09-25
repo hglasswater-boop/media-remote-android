@@ -64,8 +64,12 @@ for `Unwind`, but the version gate rejected it despite an active controller
 advertising `ACTION_PLAY_FROM_MEDIA_ID`. A one-shot shell MediaSession probe using
 the same requested video and RQ list changed local playback to `Unwind` and built
 a 25-item queue. This verifies that 9.38.51 accepts the encoded WatchEndpoint
-used by the adapter; sender state still needs validation with the updated receiver
-APK. A same-song probe beforehand also restarted playback and rebuilt the queue.
+used by the adapter. A same-song probe beforehand also restarted playback and
+rebuilt the queue. After installing signed test build 0.6.34 b1080, the sender
+selected `Unwind` again. The receiver dispatched `playFromMediaId`, confirmed
+the MediaSession transition to `Unwind` / Paco Versailles, and sent its requested
+video ID and RQ queue through Lounge with HTTP 200. The user confirmed that the
+sender also displayed `Unwind`.
 - For a fresh `setPlaylist`, the receiver now waits for the requested track to be
   confirmed in MediaSession before applying `currentTime`, including zero. This
   prevents the previous track's final position from being clamped to the new
