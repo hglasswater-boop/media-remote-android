@@ -45,7 +45,7 @@ performed, and no local synthetic queue is installed.
 ## Compatibility and unresolved limitations
 
 - Internal format: tested on YTM versions **9.34.52**, **9.35.54**,
-  **9.36.50**, and **9.38.51**. The receiver attempts RQ handoff when a YouTube
+  **9.36.50**, **9.38.51**, and **9.39.53**. The receiver attempts RQ handoff when a YouTube
   Music MediaSession advertises `ACTION_PLAY_FROM_MEDIA_ID`, regardless of its
   version number. This avoids rejecting a compatible app update solely because
   its version has not been added to a list. An advertised action and successful
@@ -77,6 +77,13 @@ selected `Unwind` again. The receiver dispatched `playFromMediaId`, confirmed
 the MediaSession transition to `Unwind` / Paco Versailles, and sent its requested
 video ID and RQ queue through Lounge with HTTP 200. The user confirmed that the
 sender also displayed `Unwind`.
+
+On 2026-10-05, signed test build 0.6.35 b1081 was installed over 0.6.34 on the
+same Sony 802SO, now running YouTube Music 9.39.53. The sender selected `Forever`
+(video ID `JG7HJ7EWpdk`) in an RQ queue. The receiver dispatched
+`playFromMediaId`, confirmed a MediaSession transition to `Forever` / Pale,
+and sent the same video ID and RQ list through Lounge with HTTP 200. The user
+confirmed that the sender also displayed `Forever`.
 - For a fresh `setPlaylist`, the receiver now waits for the requested track to be
   confirmed in MediaSession before applying `currentTime`, including zero. This
   prevents the previous track's final position from being clamped to the new
