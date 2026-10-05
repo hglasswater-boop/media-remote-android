@@ -44,10 +44,14 @@ performed, and no local synthetic queue is installed.
 
 ## Compatibility and unresolved limitations
 
-- Internal format: enabled only on verified YTM versions **9.34.52**, **9.35.54**,
-  **9.36.50**, and **9.38.51**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
-  Other versions fail this
-  RQ command explicitly; ordinary PL/song URI behavior remains unchanged.
+- Internal format: tested on YTM versions **9.34.52**, **9.35.54**,
+  **9.36.50**, and **9.38.51**. The receiver attempts RQ handoff when a YouTube
+  Music MediaSession advertises `ACTION_PLAY_FROM_MEDIA_ID`, regardless of its
+  version number. This avoids rejecting a compatible app update solely because
+  its version has not been added to a list. An advertised action and successful
+  Binder dispatch do not prove playback; the receiver still waits for the
+  MediaSession track transition before confirming the sender selection.
+  Ordinary PL/song URI behavior remains unchanged.
 - `ctt` and `params` remain stored in Lounge state but are **not forwarded** by
   this adapter. Their native field mappings are unverified. The successful probe
   used the existing device account. Cross-account/private-queue access and these
@@ -56,6 +60,9 @@ performed, and no local synthetic queue is installed.
   discard the queue. A dispatch exception/unavailable transport returns false.
 - Logs distinguish dispatch from acceptance, include IDs/index and presence flags
   only, and do not include encoded media IDs or opaque credential values.
+- If a future YouTube Music version changes its private MediaItemInfo parser, the
+  RQ handoff may still fail. The receiver must not report an unconfirmed selection
+  as successful or silently switch to the URI route, which loses the queue.
 - Playback acceptance, following tracks, sender display, reconnection, and the
   sender's playlist title still require end-to-end testing after installation.
 

@@ -66,13 +66,4 @@ class YouTubeMusicQueueMediaIdTest {
             .encodeToString(Base64.getUrlDecoder().decode(encoded)))
     }
 
-    @Test fun supportsVerifiedYouTubeMusicVersions() {
-        assertEquals(true, YouTubeMusicQueueMediaId.supportsVersion("9.34.52"))
-        assertEquals(true, YouTubeMusicQueueMediaId.supportsVersion("9.35.54"))
-        assertEquals(true, YouTubeMusicQueueMediaId.supportsVersion("9.36.50"))
-        assertEquals(true, YouTubeMusicQueueMediaId.supportsVersion("9.38.51"))
-        assertEquals(false, YouTubeMusicQueueMediaId.supportsVersion("9.35.55"))
-        assertEquals(false, YouTubeMusicQueueMediaId.supportsVersion("9.38.52"))
-        assertEquals(false, YouTubeMusicQueueMediaId.supportsVersion(null))
-    }
 }
