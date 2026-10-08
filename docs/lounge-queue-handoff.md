@@ -317,3 +317,39 @@ advances and waits for a real MediaSession transition before acknowledging it.
 The periodic comparison uses the confirmed snapshot identity, so an unchanged
 track no longer causes repeated `nowPlaying`. This needs a signed-build device
 check: select an RQ song, advance naturally, then compare both screens and logs.
+
+### Receive acknowledgement and position-update race (0.6.40)
+
+After several hours on 0.6.39, the receiver played `インコンプリート` / 流線形
+while the controller retained `日本ロマンチック街道` / sucola and its connected
+display. Two independent code paths could lose synchronization:
+
+- `sendMessageQuery(null)` incremented BrowserChannel AID for every outgoing
+  status message. AID acknowledges the last array received from the server;
+  advancing it for outgoing messages can skip unread sender commands after a
+  backchannel reconnect. AID now changes only when an incoming array is parsed,
+  and a new bind starts at -1. Tests send 18,000 playback updates before the next
+  incoming command and verify that the receive cursor stays unchanged.
+- The position-state drain reconciled track identity before the periodic track
+  publisher. At an automatic transition, this could map a different local track
+  to the sender's next queue ID before the RQ correction ran. Position updates
+  now wait for the track publisher to confirm the current snapshot.
+
+Reference: [Google BrowserChannel implementation](https://github.com/google/closure-library/blob/master/closure/goog/net/browserchannel.js)
+uses the last received array ID for both forward and backchannel AID parameters.
+These code checks require a signed-build device retest, including a reconnect
+and subsequent sender commands; a short matching title alone is insufficient.
+
+During the live failure, pressing Pause and Play on the controller resumed
+periodic sync and the receiver published `月の椀` / サカナクション. This shows
+that the receiver had stopped observing playback while the sender retained its
+Cast UI. A `loungeStatus` without a remote sender previously stopped updates and
+discarded playlist context. Once started, observation now continues while the
+controller is in the background, and reconnecting the same screen preserves
+playback context. The full track publisher handles sender reconnects as well as
+periodic changes; the position-only drain waits for its confirmed snapshot.
+
+Pending selections also no longer accept the sender queue's positional mapping
+as proof of playback. The old native queue can expose the same size and index
+before metadata changes; confirmation requires the direct requested video ID
+or an accepted MediaSession transition.

@@ -337,7 +337,7 @@ internal class YouTubeLoungeSession(
         sessionReady = true
         if (previousScreenId != null && previousScreenId != activeSid) {
             Log.i(TAG, "Lounge screen id changed; waiting for a fresh sender pairing")
-            resetSenderStateForReconnect()
+            resetSenderStateForReconnect(clearPlayback = true)
         }
         Log.i(TAG, "Lounge initial bind ready for theme=m screenId=$activeSid")
     }
@@ -394,12 +394,12 @@ internal class YouTubeLoungeSession(
                         consecutiveFailures = 0
                         if (!reconnected) {
                             readyCallbackFired = true
-                            Log.i(TAG, "Lounge RPC connection established")
+                            Log.i(TAG, "Lounge RPC connection established: receivedAid=${bindParams.aid} senderConnected=$senderConnected")
                             onStatus("YouTube Lounge RPC接続完了")
                             runCatching { onFirstConnected?.invoke() }
                                 .onFailure { Log.e(TAG, "Lounge RPC ready callback failed", it) }
                         } else {
-                            Log.i(TAG, "Lounge RPC connection re-established")
+                            Log.i(TAG, "Lounge RPC connection re-established: receivedAid=${bindParams.aid} senderConnected=$senderConnected")
                             onStatus("YouTube Lounge RPC再接続完了")
                         }
 
@@ -470,19 +470,24 @@ internal class YouTubeLoungeSession(
         }.getOrDefault(false)
     }
 
-    private fun resetSenderStateForReconnect() {
+    private fun resetSenderStateForReconnect(clearPlayback: Boolean = false) {
         senderConnected = false
         stateSyncDirty.set(false)
         synchronized(this) {
             pendingStateAid = null
             pendingIdentityKey = null
-            lastMediaSnapshot = null
-            clearPlaybackContext()
+            if (clearPlayback) {
+                lastMediaSnapshot = null
+                clearPlaybackContext()
+            }
         }
     }
 
     private fun handleIncoming(message: LoungeMessage) {
         val payload = message.payload as? JSONObject
+        if (isSenderActivityMessage(message.name)) {
+            Log.i(TAG, "Sender command received: name=${message.name} receivedAid=${message.aid}")
+        }
         when (message.name) {
             "setPlaylist", "updatePlaylist" -> {
                 cancelPendingStateResyncForSelection()
@@ -809,17 +814,14 @@ internal class YouTubeLoungeSession(
 
     private fun handleLoungeStatus(aid: Int, payload: JSONObject?) {
         val senderPresent = remoteSenderPresent(payload)
+        Log.i(TAG, "Lounge sender presence: present=$senderPresent wasConnected=$senderConnected receivedAid=$aid")
         if (senderPresent == false) {
             if (senderConnected) {
                 senderConnected = false
-                stateSyncDirty.set(false)
-                synchronized(this) {
-                    pendingStateAid = null
-                    pendingIdentityKey = null
-                    lastMediaSnapshot = null
-                    clearPlaybackContext()
-                }
-                onStatus("YouTube Music送信端末とLounge接続解除")
+                // A background sender can temporarily disappear from Lounge while retaining its
+                // Cast UI. Keep observing playback and updating the receiver's server-side state;
+                // otherwise it resumes with an old title and the native queue has already moved.
+                onStatus("操作側のLounge接続を待機中・再生同期は継続")
             }
             return
         }
@@ -827,11 +829,6 @@ internal class YouTubeLoungeSession(
         val wasConnected = senderConnected
         senderConnected = true
         if (!wasConnected) {
-            stateSyncDirty.set(false)
-            synchronized(this) {
-                pendingStateAid = null
-                lastMediaSnapshot = null
-            }
             onStatus("YouTube Music送信端末とLounge接続成立")
         }
 
@@ -860,7 +857,7 @@ internal class YouTubeLoungeSession(
         if (mediaSyncFuture != null) return
         mediaSyncFuture = mediaSyncExecutor.scheduleAtFixedRate(
             {
-                if (running.get() && senderConnected) {
+                if (running.get()) {
                     runCatching { publishMediaState(aid = null, force = false) }
                         .onFailure { Log.w(TAG, "Periodic media state sync failed", it) }
                 }
@@ -888,21 +885,7 @@ internal class YouTubeLoungeSession(
     @Synchronized
     private fun publishSenderConnectedState(aid: Int?, refreshPlaylist: Boolean = false) {
         if (!sessionReady || !senderConnected) return
-
-        val snapshot = MediaSessionBridge.snapshot(appContext)
-        syncCurrentVideo(snapshot)
-        sendHasPreviousNextChanged(aid, snapshot)
-        if (refreshPlaylist && currentVideoConfirmed &&
-            currentVideoId?.let(::playlistContextMatches) == true
-        ) {
-            pendingPlaylistNotification = false
-            sendPlaylist(aid)
-        } else {
-            sendPendingPlaylistChange(aid)
-        }
-        sendNowPlaying(aid, snapshot)
-        if (currentVideoConfirmed) queueStateChange(aid)
-        lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
+        publishMediaState(aid, force = true, refreshPlaylist = refreshPlaylist)
     }
 
     @Synchronized
@@ -915,7 +898,7 @@ internal class YouTubeLoungeSession(
         // A sleeping sender can omit loungeStatus when it wakes. A DIAL app-status request or an
         // explicit command is still proof that the sender is checking this receiver, so allow the
         // forced snapshot through even before its status event reaches the Lounge RPC stream.
-        if (!senderConnected && !force) return
+        if (!observingPlayback() && !force) return
 
         val snapshot = MediaSessionBridge.snapshot(appContext)
         val previous = lastMediaSnapshot
@@ -1030,42 +1013,6 @@ internal class YouTubeLoungeSession(
         currentIndex = targetIndex
         requestMediaSync(aid = null, force = true, delayMs = 450)
         return true
-    }
-
-    private fun trackIdentityChanged(previous: MediaSnapshot, current: MediaSnapshot): Boolean {
-        // A selected queue can contain the same title/artist as the track that was already playing.
-        // YTM still replaces queue item ids when playFromMediaId installs the requested queue.
-        // Treat a changed two-item window as a track/queue transition so the sender's requested
-        // videoId wins over a stale catalog cache for that ambiguous title.
-        val comparableQueueItems = minOf(previous.queueWindow.size, current.queueWindow.size, 3)
-        if (comparableQueueItems >= 2 && (0 until comparableQueueItems).any { index ->
-                previous.queueWindow[index].queueId > 0L &&
-                    current.queueWindow[index].queueId > 0L &&
-                    previous.queueWindow[index].queueId != current.queueWindow[index].queueId
-            }
-        ) return true
-
-        if (
-            previous.queueSize > 1 &&
-            previous.queueSize == current.queueSize &&
-            previous.queueIndex >= 0 &&
-            current.queueIndex >= 0 &&
-            previous.queueIndex != current.queueIndex
-        ) {
-            return true
-        }
-
-        val previousId = previous.mediaId.takeIf(YOUTUBE_VIDEO_ID::matches)
-        val currentId = current.mediaId.takeIf(YOUTUBE_VIDEO_ID::matches)
-        if (previousId != null && currentId != null && previousId != currentId) return true
-
-        val previousTitle = normalizeTrackText(previous.title)
-        val currentTitle = normalizeTrackText(current.title)
-        if (previousTitle.isNotBlank() && currentTitle.isNotBlank() && previousTitle != currentTitle) return true
-
-        val previousArtist = normalizeTrackText(previous.artist)
-        val currentArtist = normalizeTrackText(current.artist)
-        return previousArtist.isNotBlank() && currentArtist.isNotBlank() && previousArtist != currentArtist
     }
 
     private fun normalizeTrackText(value: String): String = value.trim().lowercase()
@@ -1185,10 +1132,12 @@ internal class YouTubeLoungeSession(
         if (expected != null) {
             val transitionedToRequestedSelection =
                 senderSelectionCommandAccepted && pendingSelectionTrackTransitioned(snapshot, previousSnapshot)
-            if (
-                (!senderSelectionRequiresTransition &&
-                    (playlistResolved == expected || directResolved == expected)) ||
-                transitionedToRequestedSelection
+            // The old native queue can have the same size and index as the new sender queue.
+            // Its positional mapping is not evidence that the requested song has started.
+            if (pendingSelectionConfirmed(
+                    expected, directResolved, senderSelectionRequiresTransition,
+                    transitionedToRequestedSelection,
+                )
             ) {
                 senderExpectedVideoId = null
                 senderSelectionDeadlineMs = 0L
@@ -1367,7 +1316,7 @@ internal class YouTubeLoungeSession(
      * slow catalog response for track A from overwriting track B after a rapid skip.
      */
     private fun scheduleIdentityResolution(snapshot: MediaSnapshot) {
-        if (!running.get() || !senderConnected || snapshot.title.isBlank()) return
+        if (!running.get() || !observingPlayback() || snapshot.title.isBlank()) return
         if (currentVideoConfirmed && YOUTUBE_VIDEO_ID.matches(snapshot.mediaId)) return
 
         val key = identityKey(snapshot)
@@ -1380,7 +1329,7 @@ internal class YouTubeLoungeSession(
             try {
                 var candidateSnapshot = snapshot
                 repeat(IDENTITY_RESOLUTION_ATTEMPTS) { attempt ->
-                    if (!running.get() || !senderConnected) return@execute
+                    if (!running.get() || !observingPlayback()) return@execute
 
                     val videoId = YouTubeMusicTrackResolver.resolve(
                         candidateSnapshot,
@@ -1483,7 +1432,7 @@ internal class YouTubeLoungeSession(
     }
 
     private fun queueStateChange(aid: Int?) {
-        if (!sessionReady || !running.get() || !senderConnected) return
+        if (!sessionReady || !running.get() || !observingPlayback()) return
         if (aid != null) {
             synchronized(this) {
                 pendingStateAid = pendingStateAid?.let { maxOf(it, aid) } ?: aid
@@ -1505,28 +1454,43 @@ internal class YouTubeLoungeSession(
                 while (
                     sessionReady &&
                     running.get() &&
-                    senderConnected &&
+                    observingPlayback() &&
                     stateSyncDirty.getAndSet(false)
                 ) {
                     val responseAid = synchronized(this) {
                         pendingStateAid.also { pendingStateAid = null }
                     }
                     val freshSnapshot = MediaSessionBridge.snapshot(appContext)
-                    syncCurrentVideo(freshSnapshot)
+                    // A position-only update must not infer a new video from the queue index.
+                    // That would bypass publishMediaState's RQ transition correction and pair the
+                    // sender's next video id with a different local autoplay track.
+                    val payload = synchronized(this) {
+                        val confirmed = lastMediaSnapshot
+                        if (canPublishPositionState(currentVideoConfirmed, confirmed, freshSnapshot)) {
+                            stateChangePayload(freshSnapshot)
+                        } else null
+                    }
+                    if (payload == null) {
+                        requestMediaSync(responseAid, force = false, delayMs = 0)
+                        continue
+                    }
                     sendMessageNow(
                         responseAid,
                         "onStateChange",
-                        stateChangePayload(freshSnapshot),
+                        payload,
                     )
                 }
             } finally {
                 stateSyncQueued.set(false)
-                if (stateSyncDirty.get() && sessionReady && running.get() && senderConnected) {
+                if (stateSyncDirty.get() && sessionReady && running.get() && observingPlayback()) {
                     startStateSyncDrain()
                 }
             }
         }
     }
+
+    /** Once playback sync starts, sender presence is independent of receiver playback state. */
+    private fun observingPlayback(): Boolean = senderConnected || mediaSyncFuture != null
 
     private fun stateChangePayload(snapshot: MediaSnapshot): Map<String, Any> {
         val outgoingSnapshot = snapshotForOutgoing(snapshot)
@@ -1690,6 +1654,7 @@ internal class YouTubeLoungeSession(
         senderSelectionDeadlineMs = 0L
         senderSelectionBaseline = null
         senderSelectionCommandAccepted = false
+        senderSelectionRequiresTransition = false
         clearSenderSelectionSeek()
     }
 

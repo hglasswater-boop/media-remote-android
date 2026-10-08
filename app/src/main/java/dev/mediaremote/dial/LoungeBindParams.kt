@@ -9,11 +9,12 @@ internal class LoungeBindParams(
     private val deviceId: String,
     private val screenName: String,
     private val modelName: String,
+    private val queryEncoder: (Map<String, String>) -> String = ::encode,
 ) {
     @Volatile var loungeIdToken: String? = null
     @Volatile var sid: String? = null
     @Volatile var gsessionId: String? = null
-    @Volatile var aid: Int = 3
+    @Volatile var aid: Int = -1
         private set
 
     private var rid: Int = Random.nextInt(41_000, 50_000)
@@ -34,13 +35,13 @@ internal class LoungeBindParams(
     fun resetForNewSession() {
         sid = null
         gsessionId = null
-        aid = 3
+        aid = -1
     }
 
     @Synchronized
     fun initSessionQuery(): String {
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
-        return encode(
+        return queryEncoder(
             common(token) + mapOf(
                 "deviceInfo" to deviceInfo().toString(),
                 "RID" to (rid++).toString(),
@@ -54,7 +55,7 @@ internal class LoungeBindParams(
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         val currentSid = requireNotNull(sid) { "Missing SID" }
         val currentGsession = requireNotNull(gsessionId) { "Missing gsessionid" }
-        return encode(
+        return queryEncoder(
             common(token) + mapOf(
                 "RID" to "rpc",
                 "SID" to currentSid,
@@ -71,8 +72,10 @@ internal class LoungeBindParams(
         val token = requireNotNull(loungeIdToken) { "Missing lounge token" }
         val currentSid = requireNotNull(sid) { "Missing SID" }
         val currentGsession = requireNotNull(gsessionId) { "Missing gsessionid" }
-        responseAid?.let { aid = maxOf(aid, it) }
-        val query = encode(
+        // AID acknowledges arrays received from the server, not outgoing state messages.
+        // handleIncoming runs only after updateFrom, so a response must never advance this cursor.
+        check(responseAid == null || responseAid <= aid) { "Cannot acknowledge an unreceived Lounge array" }
+        return queryEncoder(
             common(token) + mapOf(
                 "deviceInfo" to deviceInfo().toString(),
                 "SID" to currentSid,
@@ -81,8 +84,6 @@ internal class LoungeBindParams(
                 "gsessionid" to currentGsession,
             ),
         )
-        if (responseAid == null) aid++
-        return query
     }
 
     private fun common(token: String): Map<String, String> = linkedMapOf(
