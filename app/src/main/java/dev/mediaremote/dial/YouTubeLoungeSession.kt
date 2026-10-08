@@ -190,9 +190,8 @@ internal class YouTubeLoungeSession(
      * Re-send the complete playback state after the sender wakes or refreshes its Cast view.
      *
      * A sleeping YouTube Music sender can keep the Lounge device registered while missing the
-     * receiver's periodic updates. A Lounge sender-status event is a safer wake signal than DIAL
-     * discovery, because DIAL discovery also happens while the user is starting a new selection.
-     * Send a small retry burst instead of waiting for a media change or a new Lounge command.
+     * receiver's periodic updates. Lounge sender status or a DIAL poll after a quiet period can
+     * signal a wake. Routine DIAL polls must not trigger this full playlist retry burst.
      */
     fun requestStateResync(reason: String) {
         if (!running.get()) return

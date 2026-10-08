@@ -268,3 +268,19 @@ verify the sender screen separately. HTTP 200 alone is not UI verification.
 Credential-bearing trace files and decompiled third-party client files stay
 outside the repository. Unit tests cover only the original adapter's wire format
 and validation, not an emulation of YouTube's service.
+
+### Repeated DIAL status polling (0.6.36)
+
+On 2026-10-08, the receiver log showed `GET /apps/YouTube` every 4–6 seconds
+while the song was unchanged. Each request started three forced full state
+updates, sending the same `playlistModified` and `nowPlaying` roughly every
+0.75–1.5 seconds. The sender's seek bar jittered and its playing-on-device
+message flashed during this traffic.
+
+DIAL status requests are also routine polling. The receiver now starts the
+full retry burst only on the first request from a sender address or after at
+least 30 seconds without a DIAL app-status request from that address. Normal
+MediaSession position and track updates still flow through the periodic Lounge
+sync; a sender wake after quiet polling still
+gets the full playlist refresh. Verify on the connected sender after installing
+the signed test build; a receiver log alone cannot confirm the visual fix.
