@@ -301,3 +301,19 @@ screens and the receiver log after a natural track transition; the code change
 alone is not end-to-end proof.
 The 0.6.37 test build incorrectly treated the bind `noop` keepalive as a sender
 command; the final guard allows only known sender control and state requests.
+
+### RQ autoplay divergence and repeated nowPlaying (0.6.39)
+
+On 2026-10-08, selecting `Original Girl` through the sender reached the receiver.
+At the natural next transition, the sender showed `Driveway` (video ID
+`yJI7U5gYjek`) while the receiver played `Paradigm`. The receiver had treated a
+MediaSession queue index move as proof that its next song was the sender's next
+video ID. YouTube Music had built a different local autoplay queue for the RQ
+list. The receiver also sent `nowPlaying` every second because it compared the
+raw empty MediaSession ID with its previously confirmed ID.
+
+The receiver now requests the sender's next RQ video ID when its local queue
+advances and waits for a real MediaSession transition before acknowledging it.
+The periodic comparison uses the confirmed snapshot identity, so an unchanged
+track no longer causes repeated `nowPlaying`. This needs a signed-build device
+check: select an RQ song, advance naturally, then compare both screens and logs.
