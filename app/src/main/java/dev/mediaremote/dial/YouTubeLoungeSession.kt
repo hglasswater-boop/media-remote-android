@@ -120,6 +120,7 @@ internal class YouTubeLoungeSession(
     @Volatile private var senderSelectionDeadlineMs: Long = 0L
     @Volatile private var senderSelectionBaseline: MediaSnapshot? = null
     @Volatile private var senderSelectionCommandAccepted = false
+    @Volatile private var senderSelectionRequiresTransition = false
     @Volatile private var senderSelectionWasSameVideo = false
     @Volatile private var senderSelectionSeekVideoId: String? = null
     @Volatile private var senderSelectionPositionMs: Long? = null
@@ -190,9 +191,8 @@ internal class YouTubeLoungeSession(
      * Re-send the complete playback state after the sender wakes or refreshes its Cast view.
      *
      * A sleeping YouTube Music sender can keep the Lounge device registered while missing the
-     * receiver's periodic updates. A Lounge sender-status event is a safer wake signal than DIAL
-     * discovery, because DIAL discovery also happens while the user is starting a new selection.
-     * Send a small retry burst instead of waiting for a media change or a new Lounge command.
+     * receiver's periodic updates. Lounge sender status or a DIAL poll after a quiet period can
+     * signal a wake. Routine DIAL polls must not trigger this full playlist retry burst.
      */
     fun requestStateResync(reason: String) {
         if (!running.get()) return
@@ -533,6 +533,15 @@ internal class YouTubeLoungeSession(
             "getSubtitlesTrack" -> sendMessage(message.aid, "onSubtitlesTrackChanged", emptyMap())
             "loungeStatus" -> handleLoungeStatus(message.aid, payload)
         }
+        // A sender can omit loungeStatus after a bind/reconnect. Its Lounge command still proves
+        // that it is active; keep ordinary MediaSession updates running so automatic track changes
+        // reach the sender without relying on repeated forced DIAL refreshes. Start after handling
+        // setPlaylist so the first periodic snapshot cannot publish the old track ahead of it.
+        if (isSenderActivityMessage(message.name) && !senderConnected) {
+            senderConnected = true
+            startMediaSync()
+            Log.i(TAG, "Sender activity started periodic media sync: ${message.name}")
+        }
     }
 
     @Synchronized
@@ -625,6 +634,7 @@ internal class YouTubeLoungeSession(
                 lastMediaSnapshot?.let { sameTrack(it, baseline) } == true
             senderSelectionBaseline = baseline
             senderSelectionCommandAccepted = false
+            senderSelectionRequiresTransition = false
             clearSenderSelectionSeek()
             setCurrentVideo(videoId)
             currentVideoConfirmed = false
@@ -637,6 +647,7 @@ internal class YouTubeLoungeSession(
             senderSelectionDeadlineMs = 0L
             senderSelectionBaseline = null
             senderSelectionCommandAccepted = false
+            senderSelectionRequiresTransition = false
             clearSenderSelectionSeek()
         }
 
@@ -922,6 +933,15 @@ internal class YouTubeLoungeSession(
             null
         }
 
+        // RQ is a sender-owned list. YTM may build a different local autoplay queue from the
+        // same RQ id, so an active MediaSession index move does not prove the next video id.
+        // Ask YTM to play the sender's actual next item before acknowledging that item upstream.
+        if (trackChanged && redirectDivergentRqTransition(snapshot, previous)) {
+            unresolvedTransitionState?.let { sendMessage(aid, "onStateChange", it) }
+            lastMediaSnapshot = snapshot
+            return
+        }
+
         syncCurrentVideo(
             snapshot,
             invalidateWhenMissing = trackChanged,
@@ -939,8 +959,9 @@ internal class YouTubeLoungeSession(
             }
         }
 
+        val confirmedSnapshot = snapshotWithConfirmedIdentity(snapshot)
         val mediaChanged = previous == null ||
-            previous.mediaId != snapshot.mediaId ||
+            previous.mediaId != confirmedSnapshot.mediaId ||
             previous.title != snapshot.title ||
             previous.artist != snapshot.artist ||
             previous.album != snapshot.album ||
@@ -977,7 +998,38 @@ internal class YouTubeLoungeSession(
         }
         if (force || mediaChanged || actionsChanged) sendHasPreviousNextChanged(aid, snapshot)
 
-        lastMediaSnapshot = snapshotWithConfirmedIdentity(snapshot)
+        lastMediaSnapshot = confirmedSnapshot
+    }
+
+    @Synchronized
+    private fun redirectDivergentRqTransition(
+        snapshot: MediaSnapshot,
+        previous: MediaSnapshot?,
+    ): Boolean {
+        if (senderExpectedVideoId != null || currentListId?.startsWith("RQ", ignoreCase = true) != true) return false
+        val targetId = playlistVideoIdFromSnapshot(snapshot, previous) ?: return false
+        if (targetId == currentVideoId || targetId == snapshot.mediaId) return false
+        val targetIndex = currentVideoIds.indexOf(targetId).takeIf { it >= 0 } ?: return false
+        val baseline = snapshot
+        val url = buildMusicUrl(targetId, currentListId, targetIndex, currentCtt, currentParams)
+        Log.i(TAG, "RQ local queue advanced; requesting sender item: videoId=$targetId index=$targetIndex " +
+            "localTitle=${snapshot.title.take(80)}")
+        if (!MediaSessionBridge.execute(appContext, RemoteMediaCommand.PlayFromUrl(url))) {
+            Log.w(TAG, "RQ next-item correction rejected: videoId=$targetId")
+            return false
+        }
+        senderSelectionBaseline = baseline
+        senderSelectionWasSameVideo = false
+        senderSelectionCommandAccepted = true
+        senderSelectionRequiresTransition = true
+        senderExpectedVideoId = targetId
+        senderSelectionDeadlineMs = SystemClock.elapsedRealtime() + SENDER_SELECTION_GUARD_MS
+        clearSenderSelectionSeek()
+        setCurrentVideo(targetId)
+        currentVideoConfirmed = false
+        currentIndex = targetIndex
+        requestMediaSync(aid = null, force = true, delayMs = 450)
+        return true
     }
 
     private fun trackIdentityChanged(previous: MediaSnapshot, current: MediaSnapshot): Boolean {
@@ -1115,6 +1167,7 @@ internal class YouTubeLoungeSession(
             senderSelectionDeadlineMs = 0L
             senderSelectionBaseline = null
             senderSelectionCommandAccepted = false
+            senderSelectionRequiresTransition = false
             clearSenderSelectionSeek()
             if (!currentVideoConfirmed) clearCurrentVideoIdentity(clearIndex = false)
         }
@@ -1133,14 +1186,15 @@ internal class YouTubeLoungeSession(
             val transitionedToRequestedSelection =
                 senderSelectionCommandAccepted && pendingSelectionTrackTransitioned(snapshot, previousSnapshot)
             if (
-                playlistResolved == expected ||
-                directResolved == expected ||
+                (!senderSelectionRequiresTransition &&
+                    (playlistResolved == expected || directResolved == expected)) ||
                 transitionedToRequestedSelection
             ) {
                 senderExpectedVideoId = null
                 senderSelectionDeadlineMs = 0L
                 senderSelectionBaseline = null
                 senderSelectionCommandAccepted = false
+                senderSelectionRequiresTransition = false
                 setCurrentVideo(expected)
                 currentVideoConfirmed = true
                 alignPlaylistContextForLocalVideo(expected, snapshot)

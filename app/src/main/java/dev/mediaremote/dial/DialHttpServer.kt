@@ -1,5 +1,6 @@
 package dev.mediaremote.dial
 
+import android.os.SystemClock
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -18,6 +19,7 @@ internal class DialHttpServer(
     private val onStatus: (String) -> Unit,
 ) {
     private val running = AtomicBoolean(false)
+    private val statusResyncGate = DialStatusResyncGate()
     private val clientPool = Executors.newCachedThreadPool()
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -67,9 +69,10 @@ internal class DialHttpServer(
             }
 
             val path = normalizePath(request.path)
+            val senderAddress = client.inetAddress.hostAddress.orEmpty()
             Log.i(
                 TAG,
-                "${request.method} $path from ${client.inetAddress.hostAddress} " +
+                "${request.method} $path from $senderAddress " +
                     "length=${request.body.toByteArray(Charsets.UTF_8).size} " +
                     "transfer=${request.headers["transfer-encoding"].orEmpty()}",
             )
@@ -92,7 +95,9 @@ internal class DialHttpServer(
 
                 request.method == "GET" && path == APP_PATH -> {
                     onStatus("YouTube MusicがDIALアプリ情報を確認")
-                    loungeSession.requestStateResync("DIAL app status request")
+                    if (statusResyncGate.shouldResync(senderAddress, SystemClock.elapsedRealtime())) {
+                        loungeSession.requestStateResync("DIAL app status after idle")
+                    }
                     writeResponse(
                         output,
                         200,
@@ -103,7 +108,9 @@ internal class DialHttpServer(
                 }
 
                 request.method == "GET" && isAppInstancePath(path) -> {
-                    loungeSession.requestStateResync("DIAL app instance request")
+                    if (statusResyncGate.shouldResync(senderAddress, SystemClock.elapsedRealtime())) {
+                        loungeSession.requestStateResync("DIAL app instance after idle")
+                    }
                     writeResponse(
                         output,
                         200,

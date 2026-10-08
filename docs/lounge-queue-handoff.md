@@ -44,10 +44,14 @@ performed, and no local synthetic queue is installed.
 
 ## Compatibility and unresolved limitations
 
-- Internal format: enabled only on verified YTM versions **9.34.52**, **9.35.54**, and
-  **9.36.50**, with an active controller advertising `ACTION_PLAY_FROM_MEDIA_ID`.
-  Other versions fail this
-  RQ command explicitly; ordinary PL/song URI behavior remains unchanged.
+- Internal format: tested on YTM versions **9.34.52**, **9.35.54**,
+  **9.36.50**, **9.38.51**, and **9.39.53**. The receiver attempts RQ handoff when a YouTube
+  Music MediaSession advertises `ACTION_PLAY_FROM_MEDIA_ID`, regardless of its
+  version number. This avoids rejecting a compatible app update solely because
+  its version has not been added to a list. An advertised action and successful
+  Binder dispatch do not prove playback; the receiver still waits for the
+  MediaSession track transition before confirming the sender selection.
+  Ordinary PL/song URI behavior remains unchanged.
 - `ctt` and `params` remain stored in Lounge state but are **not forwarded** by
   this adapter. Their native field mappings are unverified. The successful probe
   used the existing device account. Cross-account/private-queue access and these
@@ -56,8 +60,30 @@ performed, and no local synthetic queue is installed.
   discard the queue. A dispatch exception/unavailable transport returns false.
 - Logs distinguish dispatch from acceptance, include IDs/index and presence flags
   only, and do not include encoded media IDs or opaque credential values.
+- If a future YouTube Music version changes its private MediaItemInfo parser, the
+  RQ handoff may still fail. The receiver must not report an unconfirmed selection
+  as successful or silently switch to the URI route, which loses the queue.
 - Playback acceptance, following tracks, sender display, reconnection, and the
   sender's playlist title still require end-to-end testing after installation.
+
+On 2026-09-25, the installed 9.38.51 receiver received a sender `setPlaylist`
+for `Unwind`, but the version gate rejected it despite an active controller
+advertising `ACTION_PLAY_FROM_MEDIA_ID`. A one-shot shell MediaSession probe using
+the same requested video and RQ list changed local playback to `Unwind` and built
+a 25-item queue. This verifies that 9.38.51 accepts the encoded WatchEndpoint
+used by the adapter. A same-song probe beforehand also restarted playback and
+rebuilt the queue. After installing signed test build 0.6.34 b1080, the sender
+selected `Unwind` again. The receiver dispatched `playFromMediaId`, confirmed
+the MediaSession transition to `Unwind` / Paco Versailles, and sent its requested
+video ID and RQ queue through Lounge with HTTP 200. The user confirmed that the
+sender also displayed `Unwind`.
+
+On 2026-10-05, signed test build 0.6.35 b1081 was installed over 0.6.34 on the
+same Sony 802SO, now running YouTube Music 9.39.53. The sender selected `Forever`
+(video ID `JG7HJ7EWpdk`) in an RQ queue. The receiver dispatched
+`playFromMediaId`, confirmed a MediaSession transition to `Forever` / Pale,
+and sent the same video ID and RQ list through Lounge with HTTP 200. The user
+confirmed that the sender also displayed `Forever`.
 - For a fresh `setPlaylist`, the receiver now waits for the requested track to be
   confirmed in MediaSession before applying `currentTime`, including zero. This
   prevents the previous track's final position from being clamped to the new
@@ -242,3 +268,52 @@ verify the sender screen separately. HTTP 200 alone is not UI verification.
 Credential-bearing trace files and decompiled third-party client files stay
 outside the repository. Unit tests cover only the original adapter's wire format
 and validation, not an emulation of YouTube's service.
+
+### Repeated DIAL status polling (0.6.36)
+
+On 2026-10-08, the receiver log showed `GET /apps/YouTube` every 4–6 seconds
+while the song was unchanged. Each request started three forced full state
+updates, sending the same `playlistModified` and `nowPlaying` roughly every
+0.75–1.5 seconds. The sender's seek bar jittered and its playing-on-device
+message flashed during this traffic.
+
+DIAL status requests are also routine polling. The receiver now starts the
+full retry burst only on the first request from a sender address or after at
+least 30 seconds without a DIAL app-status request from that address. Normal
+MediaSession position and track updates still flow through the periodic Lounge
+sync; a sender wake after quiet polling still
+gets the full playlist refresh. Verify on the connected sender after installing
+the signed test build; a receiver log alone cannot confirm the visual fix.
+
+### Sender command without loungeStatus (0.6.38)
+
+On 2026-10-08, the receiver advanced to `Hématome` while the sender remained on
+`Original Girl` and showed a position beyond the previous song's duration. The
+receiver had accepted a `setPlaylist`, but routine DIAL polls no longer forced
+full state bursts and no periodic MediaSession update reached the sender. A
+sender may send Lounge commands without a fresh `loungeStatus` after the receiver
+binds.
+
+After processing any such command, the receiver now marks the sender active and
+starts periodic MediaSession sync. This keeps automatic track changes flowing
+without restoring playlist notifications on every DIAL poll. Check both device
+screens and the receiver log after a natural track transition; the code change
+alone is not end-to-end proof.
+The 0.6.37 test build incorrectly treated the bind `noop` keepalive as a sender
+command; the final guard allows only known sender control and state requests.
+
+### RQ autoplay divergence and repeated nowPlaying (0.6.39)
+
+On 2026-10-08, selecting `Original Girl` through the sender reached the receiver.
+At the natural next transition, the sender showed `Driveway` (video ID
+`yJI7U5gYjek`) while the receiver played `Paradigm`. The receiver had treated a
+MediaSession queue index move as proof that its next song was the sender's next
+video ID. YouTube Music had built a different local autoplay queue for the RQ
+list. The receiver also sent `nowPlaying` every second because it compared the
+raw empty MediaSession ID with its previously confirmed ID.
+
+The receiver now requests the sender's next RQ video ID when its local queue
+advances and waits for a real MediaSession transition before acknowledging it.
+The periodic comparison uses the confirmed snapshot identity, so an unchanged
+track no longer causes repeated `nowPlaying`. This needs a signed-build device
+check: select an RQ song, advance naturally, then compare both screens and logs.

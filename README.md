@@ -109,6 +109,7 @@ YT Music Remoteは起動時にCast待受を開始します。
 - 再生側でYouTube Musicを一度起動する
 - YT Music Remoteの通知アクセスが有効か確認する
 - Androidのバッテリー最適化やバックグラウンド制限で停止されていないか確認する
+- 再生側のAPKを更新した直後は、操作側に以前の接続表示が残ることがあります。操作側のCastメニューで「テレビの接続を解除」を選び、`YT Music Remote <端末名>` に接続し直す
 
 ### 曲情報や再生位置が合わない
 
@@ -120,6 +121,7 @@ YouTube MusicのMediaSessionとYouTube Loungeの状態同期にはタイミン�
 
 - `Favorite Songs` などのプレイリスト名が操作側で「再生キュー」と表示される場合があります
 - 純正Chromecastと完全に同じメタデータ同期を保証するものではありません
+- RQキューでは、再生側YouTube Musicが操作側と異なる次曲を一瞬開始してから、操作側キューの次曲へ切り替わることがあります
 - DIAL / YouTube Lounge互換の非公開プロトコルに依存しているため、YouTube Musicの更新で互換性が変わる可能性があります
 - DRM解除・Google Cast証明書の偽装・Googleアカウント情報の保存は行いません
 
