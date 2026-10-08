@@ -115,6 +115,8 @@ YT Music Remoteは起動時にCast待受を開始します。
 
 YouTube MusicのMediaSessionとYouTube Loungeの状態同期にはタイミング差があります。曲変更後に数秒待っても更新されない場合は、接続し直すか再生側YouTube Musicの状態を確認してください。
 
+操作側がバックグラウンドに回ってLounge接続が一時的に切れても、再生側は曲情報の更新を続けます。接続表示だけ残って曲名が古い場合は、操作側の再生操作が届くかも確認してください。
+
 問題が解決しない場合は、再現手順・Androidバージョン・YouTube Musicバージョン・端末名を添えて [Issue](https://github.com/hglasswater-boop/media-remote-android/issues/new/choose) を作成してください。
 
 ## 既知の制約

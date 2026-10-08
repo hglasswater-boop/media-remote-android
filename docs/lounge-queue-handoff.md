@@ -339,3 +339,12 @@ Reference: [Google BrowserChannel implementation](https://github.com/google/clos
 uses the last received array ID for both forward and backchannel AID parameters.
 These code checks require a signed-build device retest, including a reconnect
 and subsequent sender commands; a short matching title alone is insufficient.
+
+During the live failure, pressing Pause and Play on the controller resumed
+periodic sync and the receiver published `月の椀` / サカナクション. This shows
+that the receiver had stopped observing playback while the sender retained its
+Cast UI. A `loungeStatus` without a remote sender previously stopped updates and
+discarded playlist context. Once started, observation now continues while the
+controller is in the background, and reconnecting the same screen preserves
+playback context. The full track publisher handles sender reconnects as well as
+periodic changes; the position-only drain waits for its confirmed snapshot.
