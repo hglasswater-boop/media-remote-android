@@ -284,3 +284,18 @@ MediaSession position and track updates still flow through the periodic Lounge
 sync; a sender wake after quiet polling still
 gets the full playlist refresh. Verify on the connected sender after installing
 the signed test build; a receiver log alone cannot confirm the visual fix.
+
+### Sender command without loungeStatus (0.6.37)
+
+On 2026-10-08, the receiver advanced to `Hématome` while the sender remained on
+`Original Girl` and showed a position beyond the previous song's duration. The
+receiver had accepted a `setPlaylist`, but routine DIAL polls no longer forced
+full state bursts and no periodic MediaSession update reached the sender. A
+sender may send Lounge commands without a fresh `loungeStatus` after the receiver
+binds.
+
+After processing any such command, the receiver now marks the sender active and
+starts periodic MediaSession sync. This keeps automatic track changes flowing
+without restoring playlist notifications on every DIAL poll. Check both device
+screens and the receiver log after a natural track transition; the code change
+alone is not end-to-end proof.

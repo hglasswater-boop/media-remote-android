@@ -532,6 +532,15 @@ internal class YouTubeLoungeSession(
             "getSubtitlesTrack" -> sendMessage(message.aid, "onSubtitlesTrackChanged", emptyMap())
             "loungeStatus" -> handleLoungeStatus(message.aid, payload)
         }
+        // A sender can omit loungeStatus after a bind/reconnect. Its Lounge command still proves
+        // that it is active; keep ordinary MediaSession updates running so automatic track changes
+        // reach the sender without relying on repeated forced DIAL refreshes. Start after handling
+        // setPlaylist so the first periodic snapshot cannot publish the old track ahead of it.
+        if (message.name != "loungeStatus" && !senderConnected) {
+            senderConnected = true
+            startMediaSync()
+            Log.i(TAG, "Sender activity started periodic media sync: ${message.name}")
+        }
     }
 
     @Synchronized
