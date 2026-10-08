@@ -394,12 +394,12 @@ internal class YouTubeLoungeSession(
                         consecutiveFailures = 0
                         if (!reconnected) {
                             readyCallbackFired = true
-                            Log.i(TAG, "Lounge RPC connection established")
+                            Log.i(TAG, "Lounge RPC connection established: receivedAid=${bindParams.aid} senderConnected=$senderConnected")
                             onStatus("YouTube Lounge RPC接続完了")
                             runCatching { onFirstConnected?.invoke() }
                                 .onFailure { Log.e(TAG, "Lounge RPC ready callback failed", it) }
                         } else {
-                            Log.i(TAG, "Lounge RPC connection re-established")
+                            Log.i(TAG, "Lounge RPC connection re-established: receivedAid=${bindParams.aid} senderConnected=$senderConnected")
                             onStatus("YouTube Lounge RPC再接続完了")
                         }
 
@@ -483,6 +483,9 @@ internal class YouTubeLoungeSession(
 
     private fun handleIncoming(message: LoungeMessage) {
         val payload = message.payload as? JSONObject
+        if (isSenderActivityMessage(message.name)) {
+            Log.i(TAG, "Sender command received: name=${message.name} receivedAid=${message.aid}")
+        }
         when (message.name) {
             "setPlaylist", "updatePlaylist" -> {
                 cancelPendingStateResyncForSelection()
@@ -809,6 +812,7 @@ internal class YouTubeLoungeSession(
 
     private fun handleLoungeStatus(aid: Int, payload: JSONObject?) {
         val senderPresent = remoteSenderPresent(payload)
+        Log.i(TAG, "Lounge sender presence: present=$senderPresent wasConnected=$senderConnected receivedAid=$aid")
         if (senderPresent == false) {
             if (senderConnected) {
                 senderConnected = false
@@ -1512,11 +1516,23 @@ internal class YouTubeLoungeSession(
                         pendingStateAid.also { pendingStateAid = null }
                     }
                     val freshSnapshot = MediaSessionBridge.snapshot(appContext)
-                    syncCurrentVideo(freshSnapshot)
+                    // A position-only update must not infer a new video from the queue index.
+                    // That would bypass publishMediaState's RQ transition correction and pair the
+                    // sender's next video id with a different local autoplay track.
+                    val payload = synchronized(this) {
+                        val confirmed = lastMediaSnapshot
+                        if (currentVideoConfirmed && confirmed != null &&
+                            !trackIdentityChanged(confirmed, freshSnapshot)
+                        ) stateChangePayload(freshSnapshot) else null
+                    }
+                    if (payload == null) {
+                        requestMediaSync(responseAid, force = false, delayMs = 0)
+                        continue
+                    }
                     sendMessageNow(
                         responseAid,
                         "onStateChange",
-                        stateChangePayload(freshSnapshot),
+                        payload,
                     )
                 }
             } finally {
