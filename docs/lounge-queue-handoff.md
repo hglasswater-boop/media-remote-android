@@ -285,7 +285,7 @@ sync; a sender wake after quiet polling still
 gets the full playlist refresh. Verify on the connected sender after installing
 the signed test build; a receiver log alone cannot confirm the visual fix.
 
-### Sender command without loungeStatus (0.6.37)
+### Sender command without loungeStatus (0.6.38)
 
 On 2026-10-08, the receiver advanced to `Hématome` while the sender remained on
 `Original Girl` and showed a position beyond the previous song's duration. The
@@ -299,3 +299,5 @@ starts periodic MediaSession sync. This keeps automatic track changes flowing
 without restoring playlist notifications on every DIAL poll. Check both device
 screens and the receiver log after a natural track transition; the code change
 alone is not end-to-end proof.
+The 0.6.37 test build incorrectly treated the bind `noop` keepalive as a sender
+command; the final guard allows only known sender control and state requests.

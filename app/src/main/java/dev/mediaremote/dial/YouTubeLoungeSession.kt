@@ -536,7 +536,7 @@ internal class YouTubeLoungeSession(
         // that it is active; keep ordinary MediaSession updates running so automatic track changes
         // reach the sender without relying on repeated forced DIAL refreshes. Start after handling
         // setPlaylist so the first periodic snapshot cannot publish the old track ahead of it.
-        if (message.name != "loungeStatus" && !senderConnected) {
+        if (isSenderActivityMessage(message.name) && !senderConnected) {
             senderConnected = true
             startMediaSync()
             Log.i(TAG, "Sender activity started periodic media sync: ${message.name}")
