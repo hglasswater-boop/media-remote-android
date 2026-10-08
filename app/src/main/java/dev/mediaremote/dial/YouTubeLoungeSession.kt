@@ -1132,10 +1132,12 @@ internal class YouTubeLoungeSession(
         if (expected != null) {
             val transitionedToRequestedSelection =
                 senderSelectionCommandAccepted && pendingSelectionTrackTransitioned(snapshot, previousSnapshot)
-            if (
-                (!senderSelectionRequiresTransition &&
-                    (playlistResolved == expected || directResolved == expected)) ||
-                transitionedToRequestedSelection
+            // The old native queue can have the same size and index as the new sender queue.
+            // Its positional mapping is not evidence that the requested song has started.
+            if (pendingSelectionConfirmed(
+                    expected, directResolved, senderSelectionRequiresTransition,
+                    transitionedToRequestedSelection,
+                )
             ) {
                 senderExpectedVideoId = null
                 senderSelectionDeadlineMs = 0L

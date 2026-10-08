@@ -7,6 +7,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LoungeTrackIdentityTest {
+    @Test fun staleNativeQueuePositionCannotConfirmANewSenderSelection() {
+        // Both queues can expose 25 items at index zero while old metadata is still playing.
+        assertFalse(pendingSelectionConfirmed("-EGCD9iwH-Y", null, false, false))
+        assertFalse(pendingSelectionConfirmed("-EGCD9iwH-Y", "jvz8VARzV0Q", false, false))
+        assertTrue(pendingSelectionConfirmed("-EGCD9iwH-Y", "-EGCD9iwH-Y", false, false))
+        assertTrue(pendingSelectionConfirmed("-EGCD9iwH-Y", null, false, true))
+        assertFalse(pendingSelectionConfirmed("-EGCD9iwH-Y", "-EGCD9iwH-Y", true, false))
+    }
+
     private val confirmed = MediaSnapshot(
         available = true, mediaId = "jvz8VARzV0Q", title = "Original Girl", artist = "Emmett Kai",
         queueIndex = 0, queueSize = 25,

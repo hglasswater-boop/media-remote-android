@@ -348,3 +348,8 @@ discarded playlist context. Once started, observation now continues while the
 controller is in the background, and reconnecting the same screen preserves
 playback context. The full track publisher handles sender reconnects as well as
 periodic changes; the position-only drain waits for its confirmed snapshot.
+
+Pending selections also no longer accept the sender queue's positional mapping
+as proof of playback. The old native queue can expose the same size and index
+before metadata changes; confirmation requires the direct requested video ID
+or an accepted MediaSession transition.
